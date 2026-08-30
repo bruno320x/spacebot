@@ -203,12 +203,12 @@ impl AcpWorker {
             .context("ACP agent stdout unavailable")?;
         self.child = Some(child);
 
-        if let Some(registry) = &self.child_registry {
-            if let Some(child) = self.child.as_ref() {
-                registry
-                    .register(&self.id.to_string(), child, &self.command)
-                    .await?;
-            }
+        if let Some(registry) = &self.child_registry
+            && let Some(child) = self.child.as_ref()
+        {
+            registry
+                .register(&self.id.to_string(), child, &self.command)
+                .await?;
         }
 
         let mut reader = BufReader::new(stdout);
