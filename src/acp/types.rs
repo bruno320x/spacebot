@@ -29,25 +29,15 @@ pub struct JsonRpcError {
 }
 
 /// Any message that can arrive from the agent process.
+///
+/// Order matters: serde's `untagged` tries variants in declaration order and
+/// ignores unknown fields. A request carries `method` + `id`, a notification
+/// carries only `method`, and a response carries `id` with `result`/`error`.
+/// Request is tried first so a `permission/request` (which also has an `id`)
+/// is never misread as a response.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum IncomingMessage {
-    /// A reply to one of our requests.
-    Response {
-        jsonrpc: String,
-        id: RequestId,
-        #[serde(default)]
-        result: Option<Value>,
-        #[serde(default)]
-        error: Option<JsonRpcError>,
-    },
-    /// A one-way notification (e.g. `session/update`).
-    Notification {
-        jsonrpc: String,
-        method: String,
-        #[serde(default)]
-        params: Option<Value>,
-    },
     /// An incoming request from the agent that we must answer
     /// (e.g. `permission/request`).
     Request {
@@ -56,6 +46,22 @@ pub enum IncomingMessage {
         method: String,
         #[serde(default)]
         params: Option<Value>,
+    },
+    /// A one-way notification (e.g. `session/update`).
+    Notification {
+        jsonrpc: String,
+        method: String,
+        #[serde(default)]
+        params: Option<Value>,
+    },
+    /// A reply to one of our requests.
+    Response {
+        jsonrpc: String,
+        id: RequestId,
+        #[serde(default)]
+        result: Option<Value>,
+        #[serde(default)]
+        error: Option<JsonRpcError>,
     },
 }
 

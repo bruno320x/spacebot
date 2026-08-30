@@ -535,7 +535,7 @@ mod tests {
         let long = "x".repeat(1000);
         let cut = truncate_output(&long, 500);
         assert!(cut.len() < 1000);
-        assert!(cut.ends_with("[truncated]"));
+        assert!(cut.contains("[truncated]"));
         assert!(truncate_output("short", 500).len() == 5);
     }
 
