@@ -14,7 +14,7 @@ use crate::secrets::store::SecretsStore;
 use crate::{AgentId, ChannelId, ProcessEvent, WorkerId};
 
 use anyhow::{Context as _, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -53,6 +53,7 @@ pub struct AcpWorker {
 
 impl AcpWorker {
     /// Create a new ACP worker.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_id: Option<ChannelId>,
         agent_id: AgentId,
@@ -84,6 +85,7 @@ impl AcpWorker {
     }
 
     /// Create a new interactive ACP worker.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_interactive(
         channel_id: Option<ChannelId>,
         agent_id: AgentId,
@@ -325,12 +327,12 @@ impl AcpWorker {
                         }
                         // The prompt response arrives after the streamed
                         // updates; the accumulated text is the result.
-                        if !saw_update && accumulated.trim().is_empty() {
-                            if let Some(result) = result {
-                                if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-                                    accumulated = text.to_string();
-                                }
-                            }
+                        if !saw_update
+                            && accumulated.trim().is_empty()
+                            && let Some(result) = result
+                            && let Some(text) = result.get("text").and_then(|v| v.as_str())
+                        {
+                            accumulated = text.to_string();
                         }
                         return Ok(accumulated);
                     }
@@ -344,21 +346,19 @@ impl AcpWorker {
                             continue;
                         }
                         saw_update = true;
-                        if let Some(content) = &update.content {
-                            if let Some(text) = content.as_text()
-                                && !text.is_empty()
-                            {
-                                accumulated.push_str(text);
-                                accumulated.push('\n');
-                                let scrubbed = self.scrub_text(&accumulated);
-                                if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&scrubbed)
-                                {
-                                    tracing::warn!(
-                                        worker_id = %self.id,
-                                        leak_prefix = %&leak[..leak.len().min(8)],
-                                        "potential secret detected in ACP worker output"
-                                    );
-                                }
+                        if let Some(content) = &update.content
+                            && let Some(text) = content.as_text()
+                            && !text.is_empty()
+                        {
+                            accumulated.push_str(text);
+                            accumulated.push('\n');
+                            let scrubbed = self.scrub_text(&accumulated);
+                            if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&scrubbed) {
+                                tracing::warn!(
+                                    worker_id = %self.id,
+                                    leak_prefix = %&leak[..leak.len().min(8)],
+                                    "potential secret detected in ACP worker output"
+                                );
                             }
                         }
                         match update.status {
@@ -530,7 +530,7 @@ async fn initialize(
 async fn create_session(
     stdin: &mut ChildStdin,
     reader: &mut BufReader<ChildStdout>,
-    directory: &PathBuf,
+    directory: &Path,
 ) -> anyhow::Result<String> {
     let request = build_session_new_request(1, &directory.to_string_lossy());
     write_line(stdin, &request).await?;

@@ -1930,10 +1930,10 @@ pub async fn resume_idle_worker_into_state(
         "acp" => {
             // ACP workers own a dedicated subprocess and session; neither
             // survives a restart. A new worker must be spawned instead.
-            return Err(format!(
+            Err(format!(
                 "ACP worker {} cannot be resumed after restart — spawn a new worker",
                 worker_id
-            ));
+            ))
         }
         "opencode" => {
             let session_id = idle_worker
