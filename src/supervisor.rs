@@ -285,14 +285,14 @@ impl TrackedChild {
         kill_by_pid(self.pid);
     }
 }
-
 /// SIGKILL a process group (`-pid`) and fall back to the plain pid.
 ///
 /// A negative pid signals every member of the group whose id is `pid`
 /// (covering descendants spawned by a group leader); the plain-pid kill is a
-/// fallback for children that were never made group leaders.
+/// fallback for children that were never made group leaders. Shared with
+/// backends (e.g. OpenCode) that own a child but want tree-kill semantics.
 #[cfg(unix)]
-fn kill_by_pid(pid: i32) {
+pub(crate) fn kill_by_pid(pid: i32) {
     unsafe {
         libc::kill(-pid, libc::SIGKILL);
         libc::kill(pid, libc::SIGKILL);
@@ -300,7 +300,7 @@ fn kill_by_pid(pid: i32) {
 }
 
 #[cfg(not(unix))]
-fn kill_by_pid(pid: i32) {
+pub(crate) fn kill_by_pid(pid: i32) {
     tracing::warn!(
         pid,
         "supervisor: process kill not implemented on this platform"
@@ -513,6 +513,27 @@ mod tests {
         let killed = registry.kill_all().await;
         assert_eq!(killed, 2);
         assert!(registry.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn kill_group_tears_down_child_tree() {
+        let registry = ChildRegistry::new();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & sleep 30"]);
+        let mut child = registry
+            .spawn_tracked("tree", "sh", cmd)
+            .await
+            .expect("spawn");
+
+        registry.kill_group("tree").await;
+
+        // The group leader must be dead and reaped — wait returns promptly
+        // instead of hanging for the 30s sleep to finish.
+        let waited = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+        assert!(
+            waited.is_ok(),
+            "killed group leader must be reaped, not hang"
+        );
     }
 
     #[tokio::test]

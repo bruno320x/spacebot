@@ -71,6 +71,9 @@ impl OpenCodeServer {
             .stderr(Stdio::piped())
             .env("OPENCODE_CONFIG_CONTENT", &config_json)
             .env("OPENCODE_PORT", port.to_string())
+            // Own process group: teardown kills the server *and* whatever it
+            // spawned (its own tools/children), never orphaning the tree.
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()
             .with_context(|| {
@@ -243,8 +246,12 @@ impl OpenCodeServer {
             "restarting OpenCode server"
         );
 
-        // Kill existing process if still running
+        // Kill existing process if still running — the whole tree, not just
+        // the leader, so nothing the server spawned outlives it.
         if let Some(mut child) = self.process.take() {
+            if let Some(pid) = child.id() {
+                crate::supervisor::kill_by_pid(pid as i32);
+            }
             let _ = child.kill().await;
         }
 
@@ -263,6 +270,9 @@ impl OpenCodeServer {
             .stderr(Stdio::piped())
             .env("OPENCODE_CONFIG_CONTENT", &config_json)
             .env("OPENCODE_PORT", port.to_string())
+            // Own process group, same as the initial spawn: teardown of a
+            // restarted server still covers its whole tree.
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()
             .with_context(|| {
@@ -288,9 +298,14 @@ impl OpenCodeServer {
         Ok(())
     }
 
-    /// Kill the server process.
+    /// Kill the server process and its whole process tree.
     pub async fn kill(&mut self) {
         if let Some(mut child) = self.process.take() {
+            if let Some(pid) = child.id() {
+                // Group-kill first (leader + descendants), then reap the
+                // leader handle so we never leave a zombie.
+                crate::supervisor::kill_by_pid(pid as i32);
+            }
             let _ = child.kill().await;
             tracing::info!(
                 directory = %self.directory.display(),
