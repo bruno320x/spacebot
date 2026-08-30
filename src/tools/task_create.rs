@@ -151,7 +151,7 @@ pub struct TaskCreateArgs {
     pub subtasks: Vec<String>,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
-    /// Execution plan: "builtin" or "opencode".
+    /// Execution plan: "builtin", "opencode", or "acp".
     #[serde(default)]
     pub worker_type: Option<String>,
     /// Execution plan: project name or ID the work belongs to.
@@ -321,13 +321,15 @@ impl Tool for TaskCreateTool {
             None => None,
         };
 
-        if worker_type == Some(crate::tasks::TaskWorkerType::Opencode)
-            && project_id.is_none()
+        if matches!(
+            worker_type,
+            Some(crate::tasks::TaskWorkerType::Opencode | crate::tasks::TaskWorkerType::Acp)
+        ) && project_id.is_none()
             && args.worktree_id.is_none()
         {
             return Err(TaskCreateError(
-                "opencode tasks need a project (or an explicit worktree_id) so the \
-                 worker has a directory to run in"
+                "opencode and acp tasks need a project (or an explicit worktree_id) so \
+                 the worker has a directory to run in"
                     .into(),
             ));
         }

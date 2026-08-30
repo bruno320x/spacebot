@@ -1,0 +1,71 @@
+---
+title: ACP Workers
+description: Delegate coding tasks to ACP-compatible CLI agents (Claude Code, Codex, Cursor CLI) via the Agent Client Protocol.
+---
+
+# ACP Workers
+
+Spacebot can drive any [ACP-compatible](https://agentclientprotocol.com) coding CLI as a worker backend. Instead of running a Rig agent with shell/file/exec tools, an ACP worker spawns the configured CLI as a subprocess and talks to it over the Agent Client Protocol (JSON-RPC over stdio).
+
+Supported agents include Claude Code, Codex, and Cursor CLI — anything that speaks ACP v1.
+
+## Enabling
+
+ACP is disabled by default. Enable it in your config:
+
+```toml
+[defaults.acp]
+enabled = true
+command = "claude"   # the ACP-compatible CLI to launch
+args = ["--dangerously-skip-permissions"]   # optional extra arguments
+```
+
+The `command` field supports `env:VAR_NAME` resolution:
+
+```toml
+command = "env:ACP_AGENT_COMMAND"
+```
+
+Once enabled, the `spawn_worker` tool gains `"acp"` in its `worker_type` enum. The channel LLM decides whether to use `"builtin"` (default), `"opencode"`, or `"acp"` based on the task.
+
+## How It Works
+
+```
+Channel: "spawn_worker: refactor the auth module, worker_type: acp, directory: /code/myapp"
+  → Spacebot spawns `claude` as a subprocess in /code/myapp
+  → initialize → session/new → session/prompt over stdio
+  → session/update notifications stream progress
+  → Result text is returned as WorkerComplete
+```
+
+ACP workers are always interactive: they stay alive after the initial task and accept follow-ups via `route_to_worker`.
+
+## Permission Handling
+
+ACP agents ask for permission before executing tools. Spacebot answers automatically according to `permissions`:
+
+```toml
+[defaults.acp]
+permissions = "auto_accept"   # "auto_accept" (default) or "auto_reject"
+```
+
+`auto_reject` makes the agent operate read-only-ish: it can still run safe built-in tools, but anything requiring explicit approval is refused. For a coding agent you intend to do real work, keep `auto_accept` and rely on the sandbox to contain the subprocess.
+
+## Prompt Timeout
+
+Each prompt turn has a timeout (default 600s):
+
+```toml
+[defaults.acp]
+prompt_timeout_secs = 900
+```
+
+If a turn exceeds this, the worker fails with a timeout error.
+
+## Session Model
+
+Unlike OpenCode's persistent HTTP server pool, every ACP worker owns its dedicated subprocess and session:
+
+- **Isolation**: concurrent ACP workers are separate OS processes.
+- **Cancellation**: cancelling a worker kills its subprocess.
+- **Restart**: ACP sessions do not survive a Spacebot restart — an idle ACP worker cannot be resumed; spawn a new worker instead.

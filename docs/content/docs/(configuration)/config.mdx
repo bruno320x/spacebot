@@ -155,6 +155,15 @@ close_policy = "close_browser"           # "close_browser", "close_tabs", or "de
 executable_path = "/path/to/chrome"      # optional, auto-detected
 screenshot_dir = "/path/to/screenshots"  # optional, defaults to data_dir/screenshots
 
+# ACP (Agent Client Protocol) coding workers. Delegates coding tasks to an
+# ACP-compatible CLI (Claude Code, Codex, Cursor CLI) over JSON-RPC stdio.
+[defaults.acp]
+enabled = false                          # disabled until a CLI is configured
+command = "claude"                       # ACP-compatible CLI to launch (supports env:VAR_NAME)
+args = []                                # optional extra arguments
+prompt_timeout_secs = 600                # per-turn prompt timeout
+permissions = "auto_accept"              # "auto_accept" or "auto_reject"
+
 # --- Agents ---
 # At least one agent is required. First agent or the one with default = true
 # is the default.

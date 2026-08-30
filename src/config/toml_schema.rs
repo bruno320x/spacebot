@@ -319,6 +319,7 @@ pub(super) struct TomlDefaultsConfig {
     pub(super) cron_timezone: Option<String>,
     pub(super) user_timezone: Option<String>,
     pub(super) opencode: Option<TomlOpenCodeConfig>,
+    pub(super) acp: Option<TomlAcpConfig>,
     pub(super) worker_log_mode: Option<String>,
     pub(super) home_channel: Option<String>,
     pub(super) human_profile_cap: Option<usize>,
@@ -468,6 +469,16 @@ pub(super) struct TomlChannelConfig {
     pub(super) listen_only_mode: Option<bool>,
     pub(super) response_mode: Option<String>,
     pub(super) save_attachments: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct TomlAcpConfig {
+    pub(super) enabled: Option<bool>,
+    pub(super) command: Option<String>,
+    #[serde(default)]
+    pub(super) args: Vec<String>,
+    pub(super) prompt_timeout_secs: Option<u64>,
+    pub(super) permissions: Option<String>,
 }
 
 #[derive(Deserialize)]

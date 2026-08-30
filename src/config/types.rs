@@ -665,6 +665,7 @@ pub struct DefaultsConfig {
     /// "auto" (default) — matches GPT/Codex models; true — always inject; false — never inject.
     pub tool_use_enforcement: ToolUseEnforcement,
     pub opencode: OpenCodeConfig,
+    pub acp: AcpConfig,
     /// Worker log mode: "errors_only", "all_separate", or "all_combined".
     pub worker_log_mode: crate::settings::WorkerLogMode,
     /// Seeds the home channel of an instance that ships pre-configured, in
@@ -708,6 +709,7 @@ impl std::fmt::Debug for DefaultsConfig {
             .field("cron", &self.cron)
             .field("tool_use_enforcement", &self.tool_use_enforcement)
             .field("opencode", &self.opencode)
+            .field("acp", &self.acp)
             .field("worker_log_mode", &self.worker_log_mode)
             .field("home_channel", &self.home_channel)
             .field("projects", &self.projects)
@@ -1140,6 +1142,64 @@ impl Default for ChannelConfig {
             listen_only_mode: false,
             response_mode: None,
             save_attachments: true,
+        }
+    }
+}
+
+/// How ACP permission requests are answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AcpPermissionMode {
+    /// Automatically allow every permission request the agent makes.
+    #[default]
+    AutoAccept,
+    /// Automatically reject every permission request the agent makes.
+    AutoReject,
+}
+
+impl AcpPermissionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoAccept => "auto_accept",
+            Self::AutoReject => "auto_reject",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto_accept" => Some(Self::AutoAccept),
+            "auto_reject" => Some(Self::AutoReject),
+            _ => None,
+        }
+    }
+}
+
+/// ACP (Agent Client Protocol) subprocess worker configuration.
+///
+/// ACP is a JSON-RPC-over-stdio protocol for driving external coding agents
+/// (Claude Code, Codex, Cursor CLI, etc.). Unlike the OpenCode backend, each
+/// ACP worker owns a dedicated subprocess and session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpConfig {
+    /// Whether ACP workers are available.
+    pub enabled: bool,
+    /// Command that launches the ACP agent. Supports "env:VAR_NAME" references.
+    pub command: String,
+    /// Extra arguments passed to the command.
+    pub args: Vec<String>,
+    /// Timeout in seconds waiting for a prompt turn to complete.
+    pub prompt_timeout_secs: u64,
+    /// How permission requests are answered.
+    pub permissions: AcpPermissionMode,
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: "claude".to_string(),
+            args: Vec::new(),
+            prompt_timeout_secs: 600,
+            permissions: AcpPermissionMode::AutoAccept,
         }
     }
 }
@@ -1768,6 +1828,7 @@ impl Default for DefaultsConfig {
             cron: Vec::new(),
             tool_use_enforcement: ToolUseEnforcement::default(),
             opencode: OpenCodeConfig::default(),
+            acp: AcpConfig::default(),
             worker_log_mode: crate::settings::WorkerLogMode::default(),
             home_channel: None,
             human_profile_cap: 4_000,

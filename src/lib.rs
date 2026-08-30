@@ -1,5 +1,6 @@
 //! Spacebot: A Rust agentic system where every LLM process has a dedicated role.
 
+pub mod acp;
 pub mod agent;
 pub mod api;
 pub mod auth;
@@ -21,6 +22,7 @@ pub mod llm;
 pub mod mcp;
 pub mod memory;
 pub mod messaging;
+pub mod mode;
 pub mod notifications;
 pub mod openai_auth;
 pub mod opencode;
@@ -33,6 +35,7 @@ pub mod secrets;
 pub mod self_awareness;
 pub mod settings;
 pub mod skills;
+pub mod supervisor;
 pub mod tasks;
 #[cfg(feature = "metrics")]
 pub mod telemetry;
@@ -543,6 +546,10 @@ pub struct AgentDeps {
     /// to surface human display names, roles, and descriptions in agent prompts.
     pub humans: Arc<arc_swap::ArcSwap<Vec<config::HumanDef>>>,
     pub process_control_registry: Arc<agent::process_control::ProcessControlRegistry>,
+    /// Tracks live worker subprocesses grouped by owner (worker/channel) so
+    /// cancellation can kill every child a unit of work spawned — the orphan
+    /// prevention surface shared by the shell, ACP, and OpenCode backends.
+    pub child_registry: Arc<supervisor::ChildRegistry>,
     /// Sender for injecting messages into channels from outside the normal
     /// inbound message flow (e.g. cross-agent task completion notifications).
     pub injection_tx: tokio::sync::mpsc::Sender<ChannelInjection>,

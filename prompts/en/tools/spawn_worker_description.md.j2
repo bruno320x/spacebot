@@ -1,6 +1,6 @@
-Spawn an independent worker process. By default uses a built-in agent with {tools} tools. {history_note}{opencode_note}
+Spawn an independent worker process. By default uses a built-in agent with {tools} tools. {history_note}{opencode_note}{acp_note}
 
-If OpenCode is enabled and the task is coding-heavy (multi-file edits, debugging, refactors), set `worker_type` to `"opencode"` and include a `directory`.
+If OpenCode is enabled and the task is coding-heavy (multi-file edits, debugging, refactors), set `worker_type` to `"opencode"` and include a `directory`. If an ACP backend is enabled, `worker_type` to `"acp"` delegates to the configured ACP-compatible coding CLI (Claude Code, Codex, Cursor CLI).
 
 When the work executes an existing board task, pass its positive `task_number` — the task's execution plan (worker type, project, worktree, required skills) is loaded and enforced over the other arguments, the worker is bound to the task, and an approved task moves to in-progress. Omit `task_number` for ad-hoc work. A task with worktree_mode "create" gets its own worktree provisioned automatically.
 

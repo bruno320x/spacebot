@@ -4,10 +4,10 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use super::{
-    AutonomyConfig, BrowserConfig, ChannelConfig, CoalesceConfig, CompactionConfig, Config,
-    CortexConfig, DefaultsConfig, IngestionConfig, McpServerConfig, MemoryPersistenceConfig,
-    OpenCodeConfig, ResolvedAgentConfig, ToolUseEnforcement, WarmupConfig, WarmupStatus,
-    WorkReadiness, evaluate_work_readiness,
+    AcpConfig, AutonomyConfig, BrowserConfig, ChannelConfig, CoalesceConfig, CompactionConfig,
+    Config, CortexConfig, DefaultsConfig, IngestionConfig, McpServerConfig,
+    MemoryPersistenceConfig, OpenCodeConfig, ResolvedAgentConfig, ToolUseEnforcement, WarmupConfig,
+    WarmupStatus, WorkReadiness, evaluate_work_readiness,
 };
 use crate::llm::routing::RoutingConfig;
 use crate::tools::browser::SharedBrowserHandle;
@@ -57,6 +57,7 @@ pub struct RuntimeConfig {
     pub identity: ArcSwap<crate::identity::Identity>,
     pub skills: ArcSwap<crate::skills::SkillSet>,
     pub opencode: ArcSwap<OpenCodeConfig>,
+    pub acp: ArcSwap<AcpConfig>,
     /// Shared pool of OpenCode server processes. Lazily initialized on first use.
     pub opencode_server_pool: ArcSwap<crate::opencode::OpenCodeServerPool>,
     /// Cron store, set after agent initialization.
@@ -142,6 +143,7 @@ impl RuntimeConfig {
             identity: ArcSwap::from_pointee(identity),
             skills: ArcSwap::from_pointee(skills),
             opencode: ArcSwap::from_pointee(defaults.opencode.clone()),
+            acp: ArcSwap::from_pointee(defaults.acp.clone()),
             opencode_server_pool: ArcSwap::from_pointee(server_pool),
             cron_store: ArcSwap::from_pointee(None),
             cron_scheduler: ArcSwap::from_pointee(None),

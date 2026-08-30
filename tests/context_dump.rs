@@ -146,6 +146,7 @@ async fn bootstrap_deps() -> anyhow::Result<(spacebot::AgentDeps, spacebot::conf
         process_control_registry: Arc::new(
             spacebot::agent::process_control::ProcessControlRegistry::new(),
         ),
+        child_registry: Arc::new(spacebot::supervisor::ChildRegistry::new()),
         injection_tx: tokio::sync::mpsc::channel(1).0,
         working_memory: spacebot::memory::WorkingMemoryStore::new(
             db.sqlite.clone(),

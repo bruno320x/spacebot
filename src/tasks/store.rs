@@ -121,15 +121,21 @@ impl std::fmt::Display for TaskPriority {
 pub enum TaskWorkerType {
     Builtin,
     Opencode,
+    Acp,
 }
 
 impl TaskWorkerType {
-    pub const ALL: [TaskWorkerType; 2] = [TaskWorkerType::Builtin, TaskWorkerType::Opencode];
+    pub const ALL: [TaskWorkerType; 3] = [
+        TaskWorkerType::Builtin,
+        TaskWorkerType::Opencode,
+        TaskWorkerType::Acp,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             TaskWorkerType::Builtin => "builtin",
             TaskWorkerType::Opencode => "opencode",
+            TaskWorkerType::Acp => "acp",
         }
     }
 
@@ -137,6 +143,7 @@ impl TaskWorkerType {
         match value {
             "builtin" => Some(TaskWorkerType::Builtin),
             "opencode" => Some(TaskWorkerType::Opencode),
+            "acp" => Some(TaskWorkerType::Acp),
             _ => None,
         }
     }
