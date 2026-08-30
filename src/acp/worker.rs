@@ -508,9 +508,7 @@ async fn initialize(
                     return Ok(version);
                 }
             }
-            IncomingMessage::Request {
-                id, method, ..
-            } => {
+            IncomingMessage::Request { id, method, .. } => {
                 // Before the session exists, the only legitimate incoming
                 // request is a permission request (e.g. auth). Reject it.
                 if method == "permission/request" {
