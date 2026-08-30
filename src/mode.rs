@@ -12,11 +12,13 @@
 //! Cortex and the spawn paths call this when a new task arrives; humans can
 //! always override with an explicit mode.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
 /// The autonomy dial for a unit of work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TaskMode {
     /// Research only. No files touched, no commands run, no side effects.
     /// Used for novel or high-risk tasks until a human approves a plan.
@@ -249,6 +251,23 @@ mod tests {
     fn parse_is_case_insensitive() {
         assert_eq!("PLAN".parse::<TaskMode>().unwrap(), TaskMode::Plan);
         assert_eq!("  Goal  ".parse::<TaskMode>().unwrap(), TaskMode::Goal);
+    }
+
+    #[test]
+    fn serde_round_trip_persists_modes() {
+        for mode in TaskMode::ALL {
+            let json = serde_json::to_string(&mode).unwrap();
+            let back: TaskMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, mode);
+        }
+    }
+
+    #[test]
+    fn serialized_form_matches_display() {
+        // Persistence writes the display form ("plan"/"goal"/...) so data on
+        // disk reads the same way config and prompts see it.
+        assert_eq!(serde_json::to_string(&TaskMode::Plan).unwrap(), "\"plan\"");
+        assert_eq!(serde_json::to_string(&TaskMode::Yolo).unwrap(), "\"yolo\"");
     }
 
     #[test]
