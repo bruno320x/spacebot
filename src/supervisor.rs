@@ -20,7 +20,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -262,28 +261,50 @@ async fn kill_and_wait_child(child: &mut Child) {
     }
 }
 
-/// A tracked child process keyed under a group ownership id.
+/// A tracked subprocess keyed under a group ownership id.
 ///
 /// Groups let a caller terminate *all* subprocesses owned by one unit of work
 /// (a worker, a channel, a milestone) in a single call. This is the orphan
 /// prevention gate: cancel a worker and every child it spawned goes down with
 /// it, even ones the caller lost direct references to.
 ///
-/// The child is moved behind a mutex so it can be killed concurrently by the
-/// registry while a driver still owns its stdio handles.
+/// The registry tracks by **PID**, not by a `Child` handle, so a driver that
+/// owns the `Child` (and its stdio) never contends with the registry over the
+/// same handle: the registry signals the OS, the driver keeps driving.
 pub struct TrackedChild {
-    child: Arc<Mutex<Child>>,
-    /// The last (non-stdio) wait observation. `None` until observed.
+    /// OS process id. Children spawned via `spawn_tracked` are process-group
+    /// leaders, so `-pid` signals the whole tree.
+    pid: i32,
+    /// Program name, for diagnostics.
     pub program: String,
 }
 
 impl TrackedChild {
-    /// Kill the underlying process and reap it, bounded.
-    pub async fn kill(&self) {
-        let mut guard = self.child.lock().await;
-        let _ = guard.start_kill();
-        let _ = tokio::time::timeout(Duration::from_secs(5), guard.wait()).await;
+    /// Kill the process and, when it is a group leader, its whole tree.
+    pub fn kill(&self) {
+        kill_by_pid(self.pid);
     }
+}
+
+/// SIGKILL a process group (`-pid`) and fall back to the plain pid.
+///
+/// A negative pid signals every member of the group whose id is `pid`
+/// (covering descendants spawned by a group leader); the plain-pid kill is a
+/// fallback for children that were never made group leaders.
+#[cfg(unix)]
+fn kill_by_pid(pid: i32) {
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_by_pid(pid: i32) {
+    tracing::warn!(
+        pid,
+        "supervisor: process kill not implemented on this platform"
+    );
 }
 
 /// Registry of tracked subprocesses, grouped for bulk termination.
@@ -297,56 +318,49 @@ impl ChildRegistry {
         Self::default()
     }
 
-    /// Spawn and track a child belonging to `group`.
+    /// Spawn and track a child belonging to `group`, returning the `Child` so
+    /// the caller keeps stdio ownership and drives it directly.
     ///
-    /// Returns a handle that also owns the underlying `Child` (via the shared
-    /// handle) so callers can drive stdio and still have the registry able to
-    /// kill it. `Command` is taken so stdin/stdout/stderr can be piped and
-    /// extracted by the caller before or after tracking.
+    /// The child is made a process-group leader (`process_group(0)`) so a
+    /// later `kill_group` tears down its whole tree; `kill_on_drop(true)`
+    /// stays as the last-resort safety net if the registry is ever dropped
+    /// before termination.
     pub async fn spawn_tracked(
         &self,
         group: impl Into<String>,
         program: impl Into<String>,
         mut cmd: Command,
-    ) -> Result<TrackedChild> {
+    ) -> Result<Child> {
         let program = program.into();
-        // Prefer kill_on_drop as a last-resort safety net if the registry is
-        // ever dropped before termination (e.g. process being torn down).
         cmd.kill_on_drop(true);
+        cmd.process_group(0);
         let child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn '{program}'"))?;
-
-        let tracked = TrackedChild {
-            child: Arc::new(Mutex::new(child)),
-            program,
-        };
-
-        let mut children = self.children.lock().await;
-        children
-            .entry(group.into())
-            .or_default()
-            .push(tracked.clone_handle());
-        Ok(tracked)
+        self.register(group, &child, program).await?;
+        Ok(child)
     }
 
-    /// Track an already-spawned child under `group`.
+    /// Track an already-spawned child under `group`. The caller keeps
+    /// ownership of the `Child`; the registry only records its pid.
     pub async fn register(
         &self,
         group: impl Into<String>,
-        child: Child,
+        child: &Child,
         program: impl Into<String>,
-    ) -> TrackedChild {
-        let tracked = TrackedChild {
-            child: Arc::new(Mutex::new(child)),
-            program: program.into(),
-        };
+    ) -> Result<()> {
+        let pid = child
+            .id()
+            .context("cannot register a child with no process id")? as i32;
         let mut children = self.children.lock().await;
         children
             .entry(group.into())
             .or_default()
-            .push(tracked.clone_handle());
-        tracked
+            .push(TrackedChild {
+                pid,
+                program: program.into(),
+            });
+        Ok(())
     }
 
     /// Terminate every child in a group and remove them from the registry.
@@ -358,7 +372,7 @@ impl ChildRegistry {
         };
         let count = group_children.len();
         for tracked in group_children {
-            tracked.kill().await;
+            tracked.kill();
         }
         count
     }
@@ -372,7 +386,7 @@ impl ChildRegistry {
             .collect();
         let count = drained.len();
         for tracked in drained {
-            tracked.kill().await;
+            tracked.kill();
         }
         count
     }
@@ -385,16 +399,6 @@ impl ChildRegistry {
     /// True when no children are tracked.
     pub async fn is_empty(&self) -> bool {
         self.len().await == 0
-    }
-}
-
-impl TrackedChild {
-    /// Clone the shared handle for cheap multi-owner parenting.
-    fn clone_handle(&self) -> Self {
-        Self {
-            child: Arc::clone(&self.child),
-            program: self.program.clone(),
-        }
     }
 }
 
@@ -476,7 +480,7 @@ mod tests {
 
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "sleep 30"]);
-        registry
+        let _child = registry
             .spawn_tracked("worker-1", "sh", cmd)
             .await
             .expect("spawn");
@@ -492,15 +496,18 @@ mod tests {
     #[tokio::test]
     async fn registry_kill_all_clears_everything() {
         let registry = ChildRegistry::new();
-
+        let mut children = Vec::new();
         for group in ["w1", "w2"] {
             let mut cmd = Command::new("sh");
             cmd.args(["-c", "sleep 30"]);
-            registry
-                .spawn_tracked(group, "sh", cmd)
-                .await
-                .expect("spawn");
+            children.push(
+                registry
+                    .spawn_tracked(group, "sh", cmd)
+                    .await
+                    .expect("spawn"),
+            );
         }
+        let _keep_alive = children;
 
         assert_eq!(registry.len().await, 2);
         let killed = registry.kill_all().await;
@@ -511,16 +518,15 @@ mod tests {
     #[tokio::test]
     async fn registry_isolates_groups() {
         let registry = ChildRegistry::new();
-
         let mut cmd_a = Command::new("sh");
         cmd_a.args(["-c", "sleep 30"]);
-        registry
+        let _child_a = registry
             .spawn_tracked("g-a", "sh", cmd_a)
             .await
             .expect("spawn a");
         let mut cmd_b = Command::new("sh");
         cmd_b.args(["-c", "sleep 30"]);
-        registry
+        let _child_b = registry
             .spawn_tracked("g-b", "sh", cmd_b)
             .await
             .expect("spawn b");

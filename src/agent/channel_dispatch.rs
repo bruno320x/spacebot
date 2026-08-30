@@ -1406,6 +1406,7 @@ async fn spawn_acp_worker_inner(
         .await
         .insert(worker_id, input_tx);
 
+    let worker = worker.with_child_registry(state.deps.child_registry.clone());
     let worker = match worker_status_text {
         Some(ref prompt) => worker.with_system_prompt(prompt),
         None => worker,

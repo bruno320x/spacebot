@@ -45,6 +45,10 @@ pub struct AcpWorker {
     pub system_prompt: Option<String>,
     /// Secrets store for exact-match scrubbing of tool secret values.
     pub secrets_store: Option<Arc<SecretsStore>>,
+    /// Shared subprocess registry (when provided) — the subprocess is tracked
+    /// under this worker's id so group cancellation can kill it even while
+    /// the stdio driver is mid-wait. Ownership of the `Child` stays here.
+    pub child_registry: Option<Arc<crate::supervisor::ChildRegistry>>,
     pub transcript_snapshot: WorkerTranscriptSnapshot,
     /// Owned subprocess; killed on drop so a cancelled worker never orphans
     /// the agent process.
@@ -79,9 +83,17 @@ impl AcpWorker {
             input_rx: None,
             system_prompt: None,
             secrets_store: None,
+            child_registry: None,
             transcript_snapshot: crate::agent::worker::new_worker_transcript_snapshot(),
             child: None,
         }
+    }
+
+    /// Attach the shared subprocess registry so the spawned agent process is
+    /// tracked under this worker's id.
+    pub fn with_child_registry(mut self, registry: Arc<crate::supervisor::ChildRegistry>) -> Self {
+        self.child_registry = Some(registry);
+        self
     }
 
     /// Create a new interactive ACP worker.
@@ -190,6 +202,14 @@ impl AcpWorker {
             .take()
             .context("ACP agent stdout unavailable")?;
         self.child = Some(child);
+
+        if let Some(registry) = &self.child_registry {
+            if let Some(child) = self.child.as_ref() {
+                registry
+                    .register(&self.id.to_string(), child, &self.command)
+                    .await?;
+            }
+        }
 
         let mut reader = BufReader::new(stdout);
 
