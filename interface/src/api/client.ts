@@ -1226,7 +1226,7 @@ export interface UploadSkillResponse {
 
 export type TaskStatus = "pending_approval" | "backlog" | "ready" | "in_progress" | "done" | "failed";
 export type TaskPriority = "critical" | "high" | "medium" | "low";
-export type TaskWorkerType = "builtin" | "opencode";
+export type TaskWorkerType = "builtin" | "opencode" | "acp";
 export type TaskWorktreeMode = "root" | "existing" | "create";
 export type TaskDependencyKind = "gate" | "stack";
 

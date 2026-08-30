@@ -1292,6 +1292,216 @@ async fn spawn_opencode_worker_inner(
     Ok(worker_id)
 }
 
+/// Spawn an ACP-backed worker for coding tasks.
+///
+/// Instead of a Rig agent loop, this spawns an ACP-compatible CLI subprocess
+/// (Claude Code, Codex, Cursor CLI, etc.) and drives it over JSON-RPC stdio.
+pub async fn spawn_acp_worker_from_state(
+    state: &ChannelState,
+    task: impl Into<String>,
+    directory: &str,
+    interactive: bool,
+    required_skills: &[&str],
+    origin_branch_id: Option<BranchId>,
+) -> std::result::Result<crate::WorkerId, AgentError> {
+    if !interactive {
+        return Err(AgentError::Other(anyhow::anyhow!(
+            "ACP workers must be interactive"
+        )));
+    }
+
+    check_worker_limit(state).await?;
+    let task = task.into();
+    reserve_task_if_unique(state, &task).await?;
+    ensure_dispatch_readiness(state, "acp_worker");
+
+    let result = spawn_acp_worker_inner(
+        state,
+        &task,
+        directory,
+        interactive,
+        required_skills,
+        origin_branch_id,
+    )
+    .await;
+
+    // Release the reservation regardless of success or failure.
+    release_task_reservation(state, &task).await;
+
+    result
+}
+
+/// Inner implementation of ACP worker spawning, separated so the caller can
+/// handle task reservation cleanup in a single place.
+async fn spawn_acp_worker_inner(
+    state: &ChannelState,
+    task: &str,
+    directory: &str,
+    interactive: bool,
+    required_skills: &[&str],
+    origin_branch_id: Option<BranchId>,
+) -> std::result::Result<crate::WorkerId, AgentError> {
+    let directory = expand_tilde(directory);
+
+    let rc = &state.deps.runtime_config;
+    let acp_config = rc.acp.load();
+
+    if !acp_config.enabled {
+        return Err(AgentError::Other(anyhow::anyhow!(
+            "ACP workers are not enabled in config"
+        )));
+    }
+
+    let persist_directory = directory.clone();
+    let acp_secrets_store = state.deps.runtime_config.secrets.load().as_ref().clone();
+
+    // Build temporal/status context so ACP workers get the same system info
+    // (time, model, context window) as builtin workers.
+    let mut worker_status_text = build_worker_status_text(rc.as_ref(), &state.deps.sandbox);
+
+    // ACP agents read files natively, so required skills arrive as read-first
+    // file references in the system prompt rather than inlined content.
+    if !required_skills.is_empty() {
+        let skills = rc.skills.load();
+        let mut entries = Vec::new();
+        for name in required_skills {
+            match skills.get(name) {
+                Some(skill) => {
+                    entries.push(format!("- {} — {}", skill.file_path.display(), skill.name));
+                }
+                None => {
+                    tracing::warn!(skill = %name, "required skill not found, skipping injection");
+                }
+            }
+        }
+        if !entries.is_empty() {
+            let block = format!(
+                "## Required Skills\n\nBefore starting the task, read each of these skill \
+                 files and follow them — they are part of the task's contract, not \
+                 suggestions:\n{}",
+                entries.join("\n")
+            );
+            worker_status_text = Some(match worker_status_text {
+                Some(existing) => format!("{existing}\n\n{block}"),
+                None => block,
+            });
+        }
+    }
+
+    let (worker, input_tx) = crate::acp::AcpWorker::new_interactive(
+        Some(state.channel_id.clone()),
+        state.deps.agent_id.clone(),
+        task,
+        directory,
+        acp_config.command.clone(),
+        acp_config.args.clone(),
+        acp_config.permissions,
+        std::time::Duration::from_secs(acp_config.prompt_timeout_secs),
+        state.deps.event_tx.clone(),
+    );
+    let worker_id = worker.id;
+    state
+        .worker_inputs
+        .write()
+        .await
+        .insert(worker_id, input_tx);
+
+    let worker = match worker_status_text {
+        Some(ref prompt) => worker.with_system_prompt(prompt),
+        None => worker,
+    };
+    let worker = match &acp_secrets_store {
+        Some(store) => worker.with_secrets_store(store.clone()),
+        None => worker,
+    };
+
+    state
+        .process_run_logger
+        .log_worker_started(
+            Some(&state.channel_id),
+            worker_id,
+            &format!("[acp] {task}"),
+            "acp",
+            &state.deps.agent_id,
+            interactive,
+            Some(&persist_directory),
+            state
+                .autonomy_run
+                .as_ref()
+                .map(|autonomy_run| autonomy_run.run_id.as_str()),
+            origin_branch_id,
+        )
+        .await
+        .map_err(|error| AgentError::Other(anyhow::anyhow!(error)))?;
+
+    let worker_span = tracing::info_span!(
+        "worker.run",
+        worker_id = %worker_id,
+        channel_id = %state.channel_id,
+        worker_type = "acp",
+    );
+    let transcript_snapshot = worker.transcript_snapshot();
+    let handle = spawn_worker_task(
+        worker_id,
+        state.deps.event_tx.clone(),
+        state.deps.agent_id.clone(),
+        Some(state.channel_id.clone()),
+        state.process_run_logger.clone(),
+        transcript_snapshot,
+        None,
+        None,
+        acp_secrets_store,
+        Some(state.deps.task_store.clone()),
+        "acp",
+        async move {
+            let result = worker.run().await.map_err(SpacebotError::from);
+            let result = result?;
+
+            Ok::<WorkerOutcome, SpacebotError>(WorkerOutcome::Success {
+                result: result.result_text,
+            })
+        }
+        .instrument(worker_span),
+    );
+
+    state.worker_handles.write().await.insert(worker_id, handle);
+
+    let acp_task = format!("[acp] {task}");
+    {
+        let mut status = state.status_block.write().await;
+        status.add_worker(worker_id, &acp_task, false, interactive);
+    }
+
+    state
+        .deps
+        .event_tx
+        .send(crate::ProcessEvent::WorkerStarted {
+            agent_id: state.deps.agent_id.clone(),
+            worker_id,
+            channel_id: Some(state.channel_id.clone()),
+            task: acp_task,
+            worker_type: "acp".into(),
+            interactive,
+            directory: Some(persist_directory.to_string_lossy().to_string()),
+        })
+        .ok();
+
+    state
+        .deps
+        .working_memory
+        .emit(
+            crate::memory::WorkingMemoryEventType::WorkerSpawned,
+            format!("Worker spawned (acp): {task}"),
+        )
+        .channel(state.channel_id.to_string())
+        .importance(0.6)
+        .record();
+
+    tracing::info!(worker_id = %worker_id, task = %task, interactive, "ACP worker spawned");
+
+    Ok(worker_id)
+}
+
 /// Spawn a future as a tokio task that sends a `WorkerComplete` event on completion.
 ///
 /// Handles both success and error cases, logging failures and sending the
@@ -1717,6 +1927,14 @@ pub async fn resume_idle_worker_into_state(
         .map_err(|error| format!("invalid worker ID '{}': {error}", idle_worker.id))?;
 
     match idle_worker.worker_type.as_str() {
+        "acp" => {
+            // ACP workers own a dedicated subprocess and session; neither
+            // survives a restart. A new worker must be spawned instead.
+            return Err(format!(
+                "ACP worker {} cannot be resumed after restart — spawn a new worker",
+                worker_id
+            ));
+        }
         "opencode" => {
             let session_id = idle_worker
                 .opencode_session_id

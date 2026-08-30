@@ -16,7 +16,7 @@ use super::{
     CortexConfig, CronDef, DefaultsConfig, DiscordConfig, DiscordInstanceConfig, EmailConfig,
     EmailInstanceConfig, GroupDef, HumanDef, IngestionConfig, LinkDef, LlmConfig, MattermostConfig,
     MattermostInstanceConfig, McpServerConfig, McpTransport, MemoryJanitorConfig,
-    MemoryPersistenceConfig, MessagingConfig, MetricsConfig, OpenCodeConfig,
+    AcpConfig, MemoryPersistenceConfig, MessagingConfig, MetricsConfig, OpenCodeConfig,
     ParticipantContextConfig, ProjectsConfig, ProviderConfig, ReflectionConfig, SignalConfig,
     SignalInstanceConfig, SkillsConfig, SlackConfig, SlackInstanceConfig, TelegramConfig,
     TelegramInstanceConfig, TelemetryConfig, TwitchConfig, TwitchInstanceConfig, WarmupConfig,
@@ -1644,6 +1644,33 @@ impl Config {
             base_defaults.routing.clone()
         };
         let defaults = DefaultsConfig {
+            acp: toml
+                .defaults
+                .acp
+                .map(|acp| {
+                    let base = &base_defaults.acp;
+                    let command_raw = acp.command.unwrap_or_else(|| base.command.clone());
+                    let resolved_command =
+                        resolve_env_value(&command_raw).unwrap_or_else(|| base.command.clone());
+                    AcpConfig {
+                        enabled: acp.enabled.unwrap_or(base.enabled),
+                        command: resolved_command,
+                        args: if acp.args.is_empty() {
+                            base.args.clone()
+                        } else {
+                            acp.args
+                        },
+                        prompt_timeout_secs: acp
+                            .prompt_timeout_secs
+                            .unwrap_or(base.prompt_timeout_secs),
+                        permissions: acp
+                            .permissions
+                            .as_deref()
+                            .and_then(crate::config::types::AcpPermissionMode::parse)
+                            .unwrap_or(base.permissions),
+                    }
+                })
+                .unwrap_or_else(|| base_defaults.acp.clone()),
             routing: resolve_routing(toml.defaults.routing, &base_routing),
             max_concurrent_branches: toml
                 .defaults

@@ -40,6 +40,10 @@ The cortex handles bulletin generation, health monitoring, and memory maintenanc
 
 Token usage tracking is shipped. Remaining: warning thresholds, hard blocks when budgets are exceeded, session/daily/monthly aggregates, and per-model breakdown in the dashboard.
 
+### ACP Coding Workers
+
+A minimal [Agent Client Protocol](https://agentclientprotocol.com) backend is shipped: `worker_type: "acp"` spawns any ACP-compatible CLI (Claude Code, Codex, Cursor CLI) as a dedicated subprocess driven over JSON-RPC stdio, with interactive follow-ups, cancellation, and `auto_accept`/`auto_reject` permission modes. Remaining: backend profile registry, cortex ready-task pickup through the same executor, capability queries, and resume support after restart.
+
 ## Upcoming
 
 ### Hardening

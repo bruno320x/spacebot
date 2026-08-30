@@ -1,5 +1,15 @@
 # Coding Worker Backends
 
+> **Implementation status (2026-08-30):** A minimal ACP backend is
+> implemented in this fork — `TaskWorkerType::Acp`, a `[defaults.acp]` config
+> section (`enabled`, `command`, `args`, `prompt_timeout_secs`,
+> `permissions`), and `src/acp/` (JSON-RPC over stdio client). It follows the
+> OpenCode special-branch pattern in `channel_dispatch.rs` rather than the
+> full `WorkerBackendRegistry` architecture below. The profile registry, task
+> executor unification (cortex ready-task pickup), capability queries, and
+> `acp`/`capy` profiles remain future work. See
+> `docs/content/docs/(features)/acp-workers.mdx` for user-facing docs.
+
 Spacebot should be able to execute an approved task with a builtin worker, a
 local coding agent, or a durable cloud agent. The task remains the source of
 truth for what should run. A backend adapter decides how that work reaches a

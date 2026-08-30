@@ -5120,7 +5120,7 @@ export interface components {
          * @description Which kind of worker executes a task.
          * @enum {string}
          */
-        TaskWorkerType: "builtin" | "opencode";
+        TaskWorkerType: "builtin" | "opencode" | "acp";
         /**
          * @description Where a task's worker runs relative to its project checkout.
          * @enum {string}
