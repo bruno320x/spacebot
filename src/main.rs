@@ -2689,6 +2689,7 @@ async fn initialize_agents(
             process_control_registry: Arc::new(
                 spacebot::agent::process_control::ProcessControlRegistry::new(),
             ),
+            child_registry: Arc::new(spacebot::supervisor::ChildRegistry::new()),
             injection_tx: injection_tx.clone(),
             working_memory,
             api_state: Some(api_state.clone()),

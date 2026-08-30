@@ -567,6 +567,7 @@ pub(super) async fn trigger_warmup(
                 process_control_registry: Arc::new(
                     crate::agent::process_control::ProcessControlRegistry::new(),
                 ),
+                child_registry: Arc::new(crate::supervisor::ChildRegistry::new()),
                 injection_tx,
                 working_memory,
                 api_state: None,
@@ -1020,6 +1021,7 @@ pub async fn create_agent_internal(
         process_control_registry: Arc::new(
             crate::agent::process_control::ProcessControlRegistry::new(),
         ),
+        child_registry: Arc::new(crate::supervisor::ChildRegistry::new()),
         injection_tx: state.injection_tx.clone(),
         agent_names: {
             let configs = state.agent_configs.load();
