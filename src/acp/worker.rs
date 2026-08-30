@@ -183,7 +183,10 @@ impl AcpWorker {
             })?;
 
         let mut stdin = child.stdin.take().context("ACP agent stdin unavailable")?;
-        let stdout = child.stdout.take().context("ACP agent stdout unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("ACP agent stdout unavailable")?;
         self.child = Some(child);
 
         let mut reader = BufReader::new(stdout);
@@ -223,7 +226,13 @@ impl AcpWorker {
                 self.send_status("processing follow-up");
                 let follow_up_prompt = self.build_prompt(&follow_up);
                 let turn_text = match self
-                    .run_turn(&mut stdin, &mut reader, &session_id, &follow_up_prompt, false)
+                    .run_turn(
+                        &mut stdin,
+                        &mut reader,
+                        &session_id,
+                        &follow_up_prompt,
+                        false,
+                    )
                     .await
                 {
                     Ok(text) => text,
@@ -287,11 +296,7 @@ impl AcpWorker {
                     bail!(
                         "ACP prompt turn timed out after {} seconds{}",
                         timeout.as_secs(),
-                        if is_initial {
-                            ""
-                        } else {
-                            " (follow-up)"
-                        }
+                        if is_initial { "" } else { " (follow-up)" }
                     )
                 }
                 Ok(Ok(line)) => line,
@@ -310,7 +315,11 @@ impl AcpWorker {
                 IncomingMessage::Response { id, result, error } => {
                     if id == RequestId::Number(1) {
                         if let Some(error) = error {
-                            bail!("ACP session/prompt error: {} ({})", error.message, error.code);
+                            bail!(
+                                "ACP session/prompt error: {} ({})",
+                                error.message,
+                                error.code
+                            );
                         }
                         // The prompt response arrives after the streamed
                         // updates; the accumulated text is the result.
@@ -364,7 +373,9 @@ impl AcpWorker {
                         }
                     }
                 }
-                IncomingMessage::Request { id, method, params, .. } => {
+                IncomingMessage::Request {
+                    id, method, params, ..
+                } => {
                     self.handle_agent_request(stdin, &id, &method, params.as_ref())
                         .await?;
                 }
@@ -493,7 +504,9 @@ async fn initialize(
                     return Ok(version);
                 }
             }
-            IncomingMessage::Request { id, method, params, .. } => {
+            IncomingMessage::Request {
+                id, method, params, ..
+            } => {
                 // Before the session exists, the only legitimate incoming
                 // request is a permission request (e.g. auth). Reject it.
                 if method == "permission/request" {
@@ -524,7 +537,9 @@ async fn create_session(
     loop {
         let line = tokio::time::timeout(timeout, read_line(reader))
             .await
-            .map_err(|_| anyhow::anyhow!("ACP agent did not respond to session/new within 30s"))??;
+            .map_err(|_| {
+                anyhow::anyhow!("ACP agent did not respond to session/new within 30s")
+            })??;
 
         let Ok(message) = serde_json::from_str::<IncomingMessage>(&line) else {
             continue;
@@ -541,7 +556,9 @@ async fn create_session(
                         .and_then(|r| r.get("sessionId"))
                         .and_then(|v| v.as_str())
                         .map(String::from)
-                        .ok_or_else(|| anyhow::anyhow!("ACP session/new response missing sessionId"));
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("ACP session/new response missing sessionId")
+                        });
                 }
             }
             IncomingMessage::Request { id, method, .. } => {

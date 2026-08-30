@@ -122,10 +122,11 @@ pub struct SessionUpdate {
 impl SessionUpdate {
     pub fn parse(params: &Value) -> Option<Self> {
         let session_id = params.get("sessionId")?.as_str()?.to_string();
-        let status = params.get("status").and_then(|v| v.as_str()).and_then(SessionStatus::parse);
-        let content = params
-            .get("content")
-            .and_then(ContentBlock::from_value);
+        let status = params
+            .get("status")
+            .and_then(|v| v.as_str())
+            .and_then(SessionStatus::parse);
+        let content = params.get("content").and_then(ContentBlock::from_value);
         Some(Self {
             session_id,
             status,
@@ -267,10 +268,22 @@ mod tests {
 
     #[test]
     fn session_status_parses_known_and_rejects_unknown() {
-        assert_eq!(SessionStatus::parse("running"), Some(SessionStatus::Running));
-        assert_eq!(SessionStatus::parse("waiting_for_input"), Some(SessionStatus::WaitingForInput));
-        assert_eq!(SessionStatus::parse("completed"), Some(SessionStatus::Completed));
-        assert_eq!(SessionStatus::parse("cancelled"), Some(SessionStatus::Cancelled));
+        assert_eq!(
+            SessionStatus::parse("running"),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(
+            SessionStatus::parse("waiting_for_input"),
+            Some(SessionStatus::WaitingForInput)
+        );
+        assert_eq!(
+            SessionStatus::parse("completed"),
+            Some(SessionStatus::Completed)
+        );
+        assert_eq!(
+            SessionStatus::parse("cancelled"),
+            Some(SessionStatus::Cancelled)
+        );
         assert_eq!(SessionStatus::parse("error"), Some(SessionStatus::Error));
         assert_eq!(SessionStatus::parse("bogus"), None);
         assert_eq!(SessionStatus::parse(""), None);
@@ -301,12 +314,16 @@ mod tests {
         let update = SessionUpdate::parse(&params).expect("parse");
         assert_eq!(update.session_id, "s1");
         assert_eq!(update.status, Some(SessionStatus::Running));
-        assert_eq!(update.content.as_ref().and_then(ContentBlock::as_text), Some("working"));
+        assert_eq!(
+            update.content.as_ref().and_then(ContentBlock::as_text),
+            Some("working")
+        );
     }
 
     #[test]
     fn session_update_allows_missing_status_and_content() {
-        let update = SessionUpdate::parse(&serde_json::json!({ "sessionId": "s1" })).expect("parse");
+        let update =
+            SessionUpdate::parse(&serde_json::json!({ "sessionId": "s1" })).expect("parse");
         assert_eq!(update.session_id, "s1");
         assert_eq!(update.status, None);
         assert!(update.content.is_none());
@@ -338,7 +355,10 @@ mod tests {
         assert_eq!(value["params"]["protocolVersion"], 1);
         assert_eq!(value["params"]["clientInfo"]["name"], "test-client");
         // fs + terminal delegation are advertised as disabled.
-        assert_eq!(value["params"]["clientCapabilities"]["fs"]["readTextFile"], false);
+        assert_eq!(
+            value["params"]["clientCapabilities"]["fs"]["readTextFile"],
+            false
+        );
         assert_eq!(
             value["params"]["clientCapabilities"]["terminal"]["supportsOutput"],
             false
@@ -367,7 +387,8 @@ mod tests {
         assert_eq!(response["id"], 42);
         assert_eq!(response["result"]["outcome"], "allowed");
 
-        let response = build_permission_response(&RequestId::String(String::from("abc")), "rejected");
+        let response =
+            build_permission_response(&RequestId::String(String::from("abc")), "rejected");
         assert_eq!(response["id"], "abc");
 
         let error = build_error_response(&RequestId::Number(9), -32601, "nope");
@@ -380,20 +401,28 @@ mod tests {
     fn incoming_message_deserializes_all_three_shapes() {
         let response: IncomingMessage =
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#).expect("response");
-        assert!(matches!(response, IncomingMessage::Response { id: RequestId::Number(1), .. }));
+        assert!(matches!(
+            response,
+            IncomingMessage::Response {
+                id: RequestId::Number(1),
+                ..
+            }
+        ));
 
         let notification: IncomingMessage =
             serde_json::from_str(r#"{"jsonrpc":"2.0","method":"session/update"}"#)
                 .expect("notification");
         assert!(matches!(notification, IncomingMessage::Notification { .. }));
 
-        let request: IncomingMessage = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":"req-1","method":"permission/request"}"#,
-        )
-        .expect("request");
+        let request: IncomingMessage =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":"req-1","method":"permission/request"}"#)
+                .expect("request");
         assert!(matches!(
             request,
-            IncomingMessage::Request { id: RequestId::String(_), .. }
+            IncomingMessage::Request {
+                id: RequestId::String(_),
+                ..
+            }
         ));
     }
 
