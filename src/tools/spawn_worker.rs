@@ -469,7 +469,9 @@ impl Tool for SpawnWorkerTool {
             "task_number": task_number_schema()
         });
 
-        if (opencode_enabled || acp_enabled) && let Some(obj) = properties.as_object_mut() {
+        if (opencode_enabled || acp_enabled)
+            && let Some(obj) = properties.as_object_mut()
+        {
             let mut enum_values = vec!["builtin", "opencode"];
             if acp_enabled {
                 enum_values.push("acp");

@@ -323,9 +323,7 @@ impl Tool for TaskCreateTool {
 
         if matches!(
             worker_type,
-            Some(
-                crate::tasks::TaskWorkerType::Opencode | crate::tasks::TaskWorkerType::Acp
-            )
+            Some(crate::tasks::TaskWorkerType::Opencode | crate::tasks::TaskWorkerType::Acp)
         ) && project_id.is_none()
             && args.worktree_id.is_none()
         {

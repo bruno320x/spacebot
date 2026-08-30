@@ -11,12 +11,12 @@ use super::providers::{
 };
 use super::toml_schema::*;
 use super::{
-    AgentConfig, ApiConfig, ApiType, AutonomyConfig, AutonomyLevel, Binding, BrowserConfig,
-    ChannelConfig, ChronicleConfig, ClosePolicy, CoalesceConfig, CompactionConfig, Config,
-    CortexConfig, CronDef, DefaultsConfig, DiscordConfig, DiscordInstanceConfig, EmailConfig,
-    EmailInstanceConfig, GroupDef, HumanDef, IngestionConfig, LinkDef, LlmConfig, MattermostConfig,
-    MattermostInstanceConfig, McpServerConfig, McpTransport, MemoryJanitorConfig,
-    AcpConfig, MemoryPersistenceConfig, MessagingConfig, MetricsConfig, OpenCodeConfig,
+    AcpConfig, AgentConfig, ApiConfig, ApiType, AutonomyConfig, AutonomyLevel, Binding,
+    BrowserConfig, ChannelConfig, ChronicleConfig, ClosePolicy, CoalesceConfig, CompactionConfig,
+    Config, CortexConfig, CronDef, DefaultsConfig, DiscordConfig, DiscordInstanceConfig,
+    EmailConfig, EmailInstanceConfig, GroupDef, HumanDef, IngestionConfig, LinkDef, LlmConfig,
+    MattermostConfig, MattermostInstanceConfig, McpServerConfig, McpTransport, MemoryJanitorConfig,
+    MemoryPersistenceConfig, MessagingConfig, MetricsConfig, OpenCodeConfig,
     ParticipantContextConfig, ProjectsConfig, ProviderConfig, ReflectionConfig, SignalConfig,
     SignalInstanceConfig, SkillsConfig, SlackConfig, SlackInstanceConfig, TelegramConfig,
     TelegramInstanceConfig, TelemetryConfig, TwitchConfig, TwitchInstanceConfig, WarmupConfig,
