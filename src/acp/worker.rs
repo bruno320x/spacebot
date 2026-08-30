@@ -9,7 +9,7 @@
 
 use crate::acp::types::*;
 use crate::agent::worker::WorkerTranscriptSnapshot;
-use crate::config::types::AcpPermissionMode;
+use crate::config::AcpPermissionMode;
 use crate::secrets::store::SecretsStore;
 use crate::{AgentId, ChannelId, ProcessEvent, WorkerId};
 
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 /// Result of an ACP worker run.
@@ -312,7 +312,9 @@ impl AcpWorker {
             };
 
             match message {
-                IncomingMessage::Response { id, result, error } => {
+                IncomingMessage::Response {
+                    id, result, error, ..
+                } => {
                     if id == RequestId::Number(1) {
                         if let Some(error) = error {
                             bail!(
@@ -490,7 +492,9 @@ async fn initialize(
         };
 
         match message {
-            IncomingMessage::Response { id, result, error } => {
+            IncomingMessage::Response {
+                id, result, error, ..
+            } => {
                 if id == RequestId::Number(0) {
                     if let Some(error) = error {
                         bail!("ACP initialize error: {} ({})", error.message, error.code);
@@ -546,7 +550,9 @@ async fn create_session(
         };
 
         match message {
-            IncomingMessage::Response { id, result, error } => {
+            IncomingMessage::Response {
+                id, result, error, ..
+            } => {
                 if id == RequestId::Number(1) {
                     if let Some(error) = error {
                         bail!("ACP session/new error: {} ({})", error.message, error.code);
