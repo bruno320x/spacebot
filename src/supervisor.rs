@@ -18,7 +18,7 @@
 //! backend.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -306,9 +306,10 @@ impl ChildRegistry {
     pub async fn spawn_tracked(
         &self,
         group: impl Into<String>,
+        program: impl Into<String>,
         mut cmd: Command,
     ) -> Result<TrackedChild> {
-        let program = cmd.get_program().to_string_lossy().into_owned();
+        let program = program.into();
         // Prefer kill_on_drop as a last-resort safety net if the registry is
         // ever dropped before termination (e.g. process being torn down).
         cmd.kill_on_drop(true);
@@ -473,9 +474,10 @@ mod tests {
     async fn registry_tracks_and_kills_group() {
         let registry = ChildRegistry::new();
 
-        let cmd = { Command::new("sh").arg("-c").arg("sleep 30") };
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
         registry
-            .spawn_tracked("worker-1", cmd)
+            .spawn_tracked("worker-1", "sh", cmd)
             .await
             .expect("spawn");
 
@@ -492,8 +494,12 @@ mod tests {
         let registry = ChildRegistry::new();
 
         for group in ["w1", "w2"] {
-            let cmd = { Command::new("sh").arg("-c").arg("sleep 30") };
-            registry.spawn_tracked(group, cmd).await.expect("spawn");
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 30"]);
+            registry
+                .spawn_tracked(group, "sh", cmd)
+                .await
+                .expect("spawn");
         }
 
         assert_eq!(registry.len().await, 2);
@@ -506,10 +512,18 @@ mod tests {
     async fn registry_isolates_groups() {
         let registry = ChildRegistry::new();
 
-        let cmd_a = { Command::new("sh").arg("-c").arg("sleep 30") };
-        registry.spawn_tracked("g-a", cmd_a).await.expect("spawn a");
-        let cmd_b = { Command::new("sh").arg("-c").arg("sleep 30") };
-        registry.spawn_tracked("g-b", cmd_b).await.expect("spawn b");
+        let mut cmd_a = Command::new("sh");
+        cmd_a.args(["-c", "sleep 30"]);
+        registry
+            .spawn_tracked("g-a", "sh", cmd_a)
+            .await
+            .expect("spawn a");
+        let mut cmd_b = Command::new("sh");
+        cmd_b.args(["-c", "sleep 30"]);
+        registry
+            .spawn_tracked("g-b", "sh", cmd_b)
+            .await
+            .expect("spawn b");
 
         registry.kill_group("g-a").await;
 
@@ -533,7 +547,10 @@ mod tests {
             .timeout(Duration::from_secs(5));
         assert_eq!(spec.program, "git");
         assert_eq!(spec.args, vec!["status".to_string()]);
-        assert_eq!(spec.working_dir.as_deref(), Some(Path::new("/tmp")));
+        assert_eq!(
+            spec.working_dir.as_deref(),
+            Some(std::path::Path::new("/tmp"))
+        );
         assert_eq!(spec.timeout, Duration::from_secs(5));
     }
 }
