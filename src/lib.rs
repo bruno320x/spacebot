@@ -20,6 +20,7 @@ pub mod lifecycle;
 pub mod links;
 pub mod llm;
 pub mod mcp;
+pub mod mcp_server;
 pub mod memory;
 pub mod messaging;
 pub mod mode;
