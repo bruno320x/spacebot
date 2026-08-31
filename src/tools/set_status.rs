@@ -364,6 +364,7 @@ mod tests {
             .call(SetStatusArgs {
                 status: "working on it".to_string(),
                 kind: StatusKind::Progress,
+                evidence: None,
             })
             .await
             .unwrap();
