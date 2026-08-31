@@ -5,7 +5,10 @@
 //! module provides an alternative worker backend that delegates to any
 //! ACP-compatible CLI instead of running a Rig agent loop with basic tools.
 
+pub mod server;
 pub mod types;
 pub mod worker;
 
+pub use server::Server as AcpServer;
+pub use server::{AgentInfo, RunResult, Session};
 pub use worker::{AcpWorker, AcpWorkerResult};
