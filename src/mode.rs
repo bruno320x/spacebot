@@ -63,6 +63,27 @@ impl TaskMode {
     pub fn requires_verification(self) -> bool {
         matches!(self, TaskMode::Goal | TaskMode::Vibe)
     }
+
+    /// Autonomy rank: Plan < Goal < Vibe < Yolo. Used to clamp a task's mode
+    /// against the autonomy ceiling of the agent that owns it.
+    pub fn rank(self) -> u8 {
+        match self {
+            TaskMode::Plan => 0,
+            TaskMode::Goal => 1,
+            TaskMode::Vibe => 2,
+            TaskMode::Yolo => 3,
+        }
+    }
+
+    /// Clamp a mode to an autonomy ceiling: a task may never run *above* the
+    /// ceiling its agent allows. Equal ranks pass through unchanged.
+    pub fn clamp_to(self, ceiling: TaskMode) -> TaskMode {
+        if self.rank() <= ceiling.rank() {
+            self
+        } else {
+            ceiling
+        }
+    }
 }
 
 /// Signals the decision function uses to pick a mode.
@@ -211,6 +232,24 @@ mod tests {
         // guardrail drops.
         let untrusted = TaskSignals::new(true, RiskLevel::High, false).with_explicit_yolo(true);
         assert_eq!(decide_mode(untrusted), TaskMode::Goal);
+    }
+
+    #[test]
+    fn ranks_follow_ascending_autonomy() {
+        assert!(TaskMode::Plan.rank() < TaskMode::Goal.rank());
+        assert!(TaskMode::Goal.rank() < TaskMode::Vibe.rank());
+        assert!(TaskMode::Vibe.rank() < TaskMode::Yolo.rank());
+    }
+
+    #[test]
+    fn clamp_never_raises_a_mode_above_its_ceiling() {
+        assert_eq!(TaskMode::Yolo.clamp_to(TaskMode::Vibe), TaskMode::Vibe);
+        assert_eq!(TaskMode::Vibe.clamp_to(TaskMode::Vibe), TaskMode::Vibe);
+        assert_eq!(TaskMode::Vibe.clamp_to(TaskMode::Yolo), TaskMode::Vibe);
+        assert_eq!(TaskMode::Plan.clamp_to(TaskMode::Goal), TaskMode::Plan);
+        assert_eq!(TaskMode::Goal.clamp_to(TaskMode::Plan), TaskMode::Plan);
+        // A plan ceiling only ever admits Plan.
+        assert_eq!(TaskMode::Yolo.clamp_to(TaskMode::Plan), TaskMode::Plan);
     }
 
     #[test]

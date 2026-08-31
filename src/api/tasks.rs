@@ -665,6 +665,8 @@ pub(super) async fn create_task(
         context.edit_summary = Some("Task created".to_string());
     }
 
+    let ceiling = **state.autonomy_ceiling.load();
+    let ceiling_mode = crate::mode::autonomy_ceiling_mode(ceiling);
     let task = store
         .create_with_dependencies(
             crate::tasks::CreateTaskInput {
@@ -676,6 +678,10 @@ pub(super) async fn create_task(
                 priority,
                 subtasks: request.subtasks,
                 metadata: request.metadata.unwrap_or_else(|| serde_json::json!({})),
+                // API-created tasks run the standard goal loop, clamped so
+                // they never exceed the configured autonomy ceiling and never
+                // start at Yolo implicitly.
+                mode: Some(crate::mode::TaskMode::Goal.clamp_to(ceiling_mode)),
                 source_memory_id: request.source_memory_id,
                 created_by: request.created_by.unwrap_or_else(|| "human".to_string()),
                 worker_type: request.worker_type,
