@@ -303,12 +303,16 @@ pub enum ServerError {
 
 /// A deterministic in-memory session used to exercise the wire protocol in
 /// tests. Echoes prompts back, streams two `session/update` notifications, and
-/// asks for permission when the prompt mentions "risky".
+/// asks for permission when the prompt mentions "risky". Test-only: it is not
+/// referenced from production code, so it is gated to keep `cargo check` free
+/// of `-D warnings` dead-code errors.
+#[cfg(test)]
 #[derive(Debug, Default)]
 struct MockSession {
     session_id: String,
 }
 
+#[cfg(test)]
 impl Session for MockSession {
     fn start(&mut self, session_id: &str) {
         self.session_id = session_id.to_string();
@@ -365,6 +369,7 @@ impl Session for MockSession {
     }
 }
 
+#[cfg(test)]
 fn update(session_id: &str, status: &str, text: String) -> Value {
     json!({
         "jsonrpc": "2.0",
