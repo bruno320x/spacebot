@@ -9,7 +9,7 @@
 //! its immutable revision, and its dependency edges in one transaction.
 
 use crate::error::{Result, TaskError};
-use crate::mode::TaskMode;
+use crate::mode::{TaskMode, autonomy_ceiling_mode};
 use crate::tasks::revisions::{TaskMutationContext, TaskRevisionSnapshot};
 
 use anyhow::Context as _;
@@ -347,22 +347,6 @@ impl Task {
     }
 }
 
-/// The most autonomous `TaskMode` an agent at this `AutonomyLevel` may run.
-///
-/// Off and Observe permit no execution (Plan = research only); Suggest allows
-/// the full goal loop (approval still happens on the board, not by skipping
-/// it); Act is the full dial. A task's mode is clamped to this ceiling at
-/// creation time, and the default for a task with no explicit mode is
-/// `TaskMode::Goal` (never Yolo — that is chosen explicitly or not at all).
-pub fn autonomy_ceiling_mode(level: crate::config::AutonomyLevel) -> TaskMode {
-    match level {
-        crate::config::AutonomyLevel::Off => TaskMode::Plan,
-        crate::config::AutonomyLevel::Observe => TaskMode::Plan,
-        crate::config::AutonomyLevel::Suggest => TaskMode::Goal,
-        crate::config::AutonomyLevel::Act => TaskMode::Yolo,
-    }
-}
-
 #[cfg(test)]
 mod mode_ceiling_tests {
     use super::*;
@@ -420,6 +404,11 @@ mod mode_ceiling_tests {
             depends_on: Vec::new(),
             revision: 1,
             created_by: "branch".to_string(),
+            approved_at: None,
+            approved_by: None,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            completed_at: None,
         };
         // Nothing stored yet.
         assert_eq!(task.mode(), None);

@@ -295,7 +295,7 @@ impl Tool for TaskCreateTool {
         let ceiling = self
             .runtime_config
             .as_ref()
-            .map(|rc| rc.autonomy_ceiling)
+            .map(|rc| rc.autonomy.load().level)
             .unwrap_or(crate::config::AutonomyLevel::Act);
         let ceiling_mode = crate::mode::autonomy_ceiling_mode(ceiling);
         let mode = match args.mode {
@@ -525,6 +525,7 @@ mod tests {
                 worktree_id: None,
                 required_skills: Vec::new(),
                 depends_on: Vec::new(),
+                mode: None,
             })
             .await
             .expect("task create should succeed");

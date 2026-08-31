@@ -86,6 +86,22 @@ impl TaskMode {
     }
 }
 
+/// The most autonomous `TaskMode` an agent at this `AutonomyLevel` may run.
+///
+/// Off and Observe permit no execution (Plan = research only); Suggest allows
+/// the full goal loop (approval still happens on the board, not by skipping
+/// it); Act is the full dial. A task's mode is clamped to this ceiling at
+/// creation time, and the default for a task with no explicit mode is
+/// `TaskMode::Goal` (never Yolo — that is chosen explicitly or not at all).
+pub fn autonomy_ceiling_mode(level: crate::config::AutonomyLevel) -> TaskMode {
+    match level {
+        crate::config::AutonomyLevel::Off => TaskMode::Plan,
+        crate::config::AutonomyLevel::Observe => TaskMode::Plan,
+        crate::config::AutonomyLevel::Suggest => TaskMode::Goal,
+        crate::config::AutonomyLevel::Act => TaskMode::Yolo,
+    }
+}
+
 /// Signals the decision function uses to pick a mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskSignals {
