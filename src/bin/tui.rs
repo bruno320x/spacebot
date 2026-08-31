@@ -62,10 +62,10 @@ async fn run_loop<W: Write>(
                     _ => {}
                 }
             }
-            if event::poll(Duration::ZERO)? {
-                if let Event::Resize(rows, _cols) = event::read()? {
-                    height = rows as usize;
-                }
+            if event::poll(Duration::ZERO)?
+                && let Event::Resize(rows, _cols) = event::read()?
+            {
+                height = rows as usize;
             }
         }
 
@@ -122,7 +122,7 @@ async fn fetch_json(
     if !status.is_success() {
         anyhow::bail!("GET /{path} -> {status}: {body}");
     }
-    Ok(serde_json::from_str(&body).context("failed to parse response")?)
+    serde_json::from_str(&body).context("failed to parse response")
 }
 
 fn encode(value: &str) -> String {
