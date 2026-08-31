@@ -9,7 +9,7 @@
 //! its immutable revision, and its dependency edges in one transaction.
 
 use crate::error::{Result, TaskError};
-use crate::mode::{TaskMode, autonomy_ceiling_mode};
+use crate::mode::TaskMode;
 use crate::tasks::revisions::{TaskMutationContext, TaskRevisionSnapshot};
 
 use anyhow::Context as _;
@@ -351,6 +351,7 @@ impl Task {
 mod mode_ceiling_tests {
     use super::*;
     use crate::config::AutonomyLevel;
+    use crate::mode::autonomy_ceiling_mode;
 
     #[test]
     fn ceiling_maps_levels_to_modes() {
