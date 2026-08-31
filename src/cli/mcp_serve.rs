@@ -449,7 +449,7 @@ impl Tool for ChannelRecallProxy {
         }
         let path = format!(
             "channels/messages?channel_id={}&limit={}",
-            encode(&args.channel_id.trim()),
+            encode(args.channel_id.trim()),
             args.limit.clamp(1, 100)
         );
         let value = api_get(&self.0.client, &path).await?;
