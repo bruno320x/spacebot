@@ -171,7 +171,8 @@ fn format_channel(row: &ChannelRow) -> String {
     let model = row.model.as_deref().unwrap_or("-");
     format!(
         " {dot} {:<24} [{:10}] {mode} · {model}",
-        shorten(&row.display_name, 24)
+        shorten(&row.display_name, 24),
+        row.platform
     )
 }
 
