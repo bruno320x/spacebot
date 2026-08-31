@@ -8,13 +8,12 @@
 
 use super::Context;
 use super::client::ApiClient;
-use anyhow::Context as _;
 use clap::Args;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use rig::tool::server::ToolServer;
-use serde::{Deserialize, Serialize};
-use spacebot::mcp_server::{MCP_TOOL_ALLOWLIST, McpServer};
+use serde::Deserialize;
+use spacebot::mcp_server::McpServer;
 use std::sync::Arc;
 
 #[derive(Debug, Args)]
@@ -574,6 +573,7 @@ const REGISTERED_PROXY_TOOLS: [&str; 6] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spacebot::mcp_server::MCP_TOOL_ALLOWLIST;
 
     #[test]
     fn every_allowlisted_tool_has_a_proxy() {
