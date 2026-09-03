@@ -23,22 +23,6 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use tokio::process::Command;
 use tracing::instrument;
 
-/// Env vars that enable library injection or alter runtime loading behavior.
-const DANGEROUS_ENV_VARS: &[&str] = &[
-    "LD_PRELOAD",
-    "LD_LIBRARY_PATH",
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "PYTHONPATH",
-    "PYTHONSTARTUP",
-    "NODE_OPTIONS",
-    "RUBYOPT",
-    "PERL5OPT",
-    "PERL5LIB",
-    "BASH_ENV",
-    "ENV",
-];
-
 /// Exit code returned when a command is killed for waiting for input.
 const EXIT_CODE_WAITING_FOR_INPUT: i32 = -2;
 
@@ -368,7 +352,7 @@ impl Tool for ShellTool {
         }
 
         for env_var in &args.env {
-            if DANGEROUS_ENV_VARS
+            if crate::supervisor::DANGEROUS_ENV_VARS
                 .iter()
                 .any(|blocked| env_var.key.eq_ignore_ascii_case(blocked))
             {

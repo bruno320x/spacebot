@@ -29,9 +29,9 @@ use tokio::sync::Mutex;
 /// Env vars that enable library injection or alter runtime loading behavior.
 ///
 /// Always dropped from subprocess environments, regardless of sandbox state.
-/// Mirrors the list in `shell.rs` / `sandbox.rs`; kept here so the supervisor
-/// is self-contained.
-const DANGEROUS_ENV_VARS: &[&str] = &[
+/// Single source of truth — the shell tool rejects setting these, the
+/// supervisor drops them, so the policy can never drift between the two.
+pub(crate) const DANGEROUS_ENV_VARS: &[&str] = &[
     "LD_PRELOAD",
     "LD_LIBRARY_PATH",
     "DYLD_INSERT_LIBRARIES",
