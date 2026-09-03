@@ -5,6 +5,8 @@
 //! (start/stop/restart/status) talk to the daemon socket and stay in
 //! `main.rs` alongside the daemon entry point.
 
+mod acp;
+mod acp_serve;
 mod activity;
 mod agent;
 mod auth;
@@ -123,6 +125,9 @@ pub enum Command {
     /// Manage MCP servers
     #[command(subcommand)]
     Mcp(mcp::McpCommand),
+    /// Run an ACP v1 agent server
+    #[command(subcommand)]
+    Acp(acp::AcpCommand),
     /// Manage global settings and raw config
     #[command(subcommand)]
     Config(config::ConfigCommand),
@@ -196,6 +201,7 @@ pub fn dispatch(command: Command, ctx: Context) -> anyhow::Result<()> {
             Command::Provider(cmd) => provider::run(&ctx, cmd).await,
             Command::Model(cmd) => model::run(&ctx, cmd).await,
             Command::Mcp(cmd) => mcp::run(&ctx, cmd).await,
+            Command::Acp(cmd) => acp::run(&ctx, cmd).await,
             Command::Config(cmd) => config::run(&ctx, cmd).await,
             Command::Notification(cmd) => notification::run(&ctx, cmd).await,
             Command::Usage(args) => usage::run(&ctx, args).await,
