@@ -20,6 +20,10 @@ use sqlx::{Row as _, SqlitePool};
 /// task is approved.
 pub const TASK_APPROVED_WAKE_ID: &str = "task-approved";
 
+/// Id of the built-in wake that verifies the project after a worker
+/// completes and proposes a fix-worker task when the suite fails.
+pub const VERIFY_AFTER_WORK_WAKE_ID: &str = "verify-after-work";
+
 /// What causes a wake to fire. Persisted as a `trigger_kind` discriminant
 /// plus a `trigger_spec` JSON object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,12 +494,43 @@ pub async fn seed_builtin_wakes(store: &WakeDefStore) -> Result<()> {
         updated_at: String::new(),
     };
     store.insert_if_absent(&task_approved).await?;
+
+    let verify_after_work = WakeDef {
+        id: VERIFY_AFTER_WORK_WAKE_ID.to_string(),
+        name: "Verify after work".to_string(),
+        trigger: WakeTrigger::Event {
+            event: SystemEvent::WorkerCompleted,
+        },
+        instructions: "A worker just completed. Run the project's verification suite — \
+             the repo's check/build/test commands (e.g. `just gate-pr` or the \
+             equivalent CI script) — to confirm the change is green. If the \
+             suite fails, create a fix-worker task titled with the failing \
+             area, describe the failure and the relevant command output in the \
+             description, and attach the failing evidence so it can be fixed \
+             autonomously. If the suite passes, do not create a task."
+            .to_string(),
+        min_level: AutonomyLevel::Suggest,
+        enabled: true,
+        builtin: true,
+        config_owned: false,
+        delivery_target: None,
+        webhook_token: None,
+        active_hours: None,
+        next_run_at: None,
+        last_fired_at: None,
+        consecutive_failures: 0,
+        created_by: "system".to_string(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    store.insert_if_absent(&verify_after_work).await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wakes::{WakeEventStore, emit_to_stores};
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn store() -> WakeDefStore {
@@ -903,5 +938,58 @@ mod tests {
             .expect("get")
             .expect("row");
         assert!(!after.enabled);
+    }
+
+    #[tokio::test]
+    async fn seed_also_installs_verify_after_work() {
+        let store = store().await;
+        seed_builtin_wakes(&store).await.expect("seed");
+
+        let seeded = store
+            .get(VERIFY_AFTER_WORK_WAKE_ID)
+            .await
+            .expect("get")
+            .expect("row");
+        assert!(seeded.builtin);
+        assert_eq!(seeded.min_level, AutonomyLevel::Suggest);
+        assert_eq!(
+            seeded.trigger,
+            WakeTrigger::Event {
+                event: SystemEvent::WorkerCompleted
+            }
+        );
+        // Its instructions direct the agent to run verification and propose
+        // a fix-worker task only on failure.
+        assert!(seeded.instructions.contains("verification"));
+        assert!(seeded.instructions.contains("fix-worker"));
+
+        // The event routes to it: a WorkerCompleted emission enqueues exactly
+        // one pending event carrying the worker payload.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrations");
+        let store = WakeDefStore::new(pool.clone());
+        let events = WakeEventStore::new(pool);
+        seed_builtin_wakes(&store).await.expect("seed");
+        let count = emit_to_stores(
+            &store,
+            &events,
+            SystemEvent::WorkerCompleted,
+            "worker:abc",
+            &serde_json::json!({ "worker_id": "abc", "success": false, "summary": "failed" }),
+        )
+        .await
+        .expect("emit");
+        assert_eq!(count, 1);
+        let pending = events.pending(10).await.expect("pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].wake_id, VERIFY_AFTER_WORK_WAKE_ID);
+        assert_eq!(pending[0].payload["success"], false);
     }
 }
