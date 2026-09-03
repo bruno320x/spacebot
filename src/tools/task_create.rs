@@ -6,6 +6,7 @@ use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -151,6 +152,10 @@ pub struct TaskCreateArgs {
     pub subtasks: Vec<String>,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// Autonomy mode to run under ("plan", "goal", "vibe", "yolo").
+    /// Omitted → goal, clamped to the agent's autonomy ceiling.
+    #[serde(default)]
+    pub mode: Option<String>,
     /// Execution plan: "builtin", "opencode", or "acp".
     #[serde(default)]
     pub worker_type: Option<String>,
@@ -226,6 +231,11 @@ impl Tool for TaskCreateTool {
                         "type": "object",
                         "description": "Optional metadata object"
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": crate::mode::TaskMode::ALL.iter().map(|m| m.to_string()).collect::<Vec<_>>(),
+                        "description": "Autonomy mode: plan (research only), goal (plan+execute+verify, the default), vibe (fast low-risk), or yolo (guardrails off, explicit only). Omit to default to goal; clamped to never exceed the agent's autonomy ceiling."
+                    },
                     "worker_type": {
                         "type": "string",
                         "enum": crate::tasks::TaskWorkerType::ALL.iter().map(|w| w.to_string()).collect::<Vec<_>>(),
@@ -279,6 +289,22 @@ impl Tool for TaskCreateTool {
         let priority = TaskPriority::parse(&args.priority)
             .ok_or_else(|| TaskCreateError(format!("invalid priority: {}", args.priority)))?;
         let status = TaskStatus::PendingApproval;
+
+        // Autonomy mode: explicit arg wins, defaulted to the agent's ceiling,
+        // always clamped so a task never runs above its ceiling.
+        let ceiling = self
+            .runtime_config
+            .as_ref()
+            .map(|rc| rc.autonomy.load().level)
+            .unwrap_or(crate::config::AutonomyLevel::Act);
+        let ceiling_mode = crate::mode::autonomy_ceiling_mode(ceiling);
+        let mode = match args.mode {
+            Some(raw) => crate::mode::TaskMode::from_str(&raw)
+                .map_err(|_| TaskCreateError(format!("invalid mode: {raw}")))?
+                .clamp_to(ceiling_mode),
+            // Default to the standard goal loop, never Yolo implicitly.
+            None => crate::mode::TaskMode::Goal.clamp_to(ceiling_mode),
+        };
 
         let depends_on = parse_dependency_args(&args.depends_on).map_err(TaskCreateError)?;
 
@@ -361,6 +387,7 @@ impl Tool for TaskCreateTool {
                     priority,
                     subtasks,
                     metadata: args.metadata.unwrap_or_else(|| serde_json::json!({})),
+                    mode: Some(mode),
                     source_memory_id: None,
                     created_by: self.created_by.clone(),
                     worker_type,
@@ -498,6 +525,7 @@ mod tests {
                 worktree_id: None,
                 required_skills: Vec::new(),
                 depends_on: Vec::new(),
+                mode: None,
             })
             .await
             .expect("task create should succeed");

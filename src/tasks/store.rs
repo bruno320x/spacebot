@@ -9,6 +9,7 @@
 //! its immutable revision, and its dependency edges in one transaction.
 
 use crate::error::{Result, TaskError};
+use crate::mode::TaskMode;
 use crate::tasks::revisions::{TaskMutationContext, TaskRevisionSnapshot};
 
 use anyhow::Context as _;
@@ -18,6 +19,7 @@ use serde_json::Value;
 #[cfg(test)]
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row as _, SqlitePool};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -311,6 +313,22 @@ impl Task {
             .unwrap_or(&self.owner_agent_id)
     }
 
+    /// The autonomy mode chosen for this task, when one was stored.
+    ///
+    /// Kept in `metadata` (rather than a column) so reads/writes stay
+    /// migration-safe; the value is the lowercase `Display` form.
+    pub fn mode(&self) -> Option<TaskMode> {
+        self.metadata
+            .get("mode")
+            .and_then(Value::as_str)
+            .and_then(|value| TaskMode::from_str(value).ok())
+    }
+
+    /// Persist the task's autonomy mode into its metadata.
+    pub fn set_mode(&mut self, mode: TaskMode) {
+        self.metadata["mode"] = Value::String(mode.to_string());
+    }
+
     /// Task numbers of unsatisfied dependencies.
     pub fn blocked_by(&self) -> Vec<i64> {
         self.depends_on
@@ -326,6 +344,81 @@ impl Task {
             .iter()
             .find(|edge| edge.kind == TaskDependencyKind::Stack)
             .map(|edge| edge.depends_on_task_number)
+    }
+}
+
+#[cfg(test)]
+mod mode_ceiling_tests {
+    use super::*;
+    use crate::config::AutonomyLevel;
+    use crate::mode::autonomy_ceiling_mode;
+
+    #[test]
+    fn ceiling_maps_levels_to_modes() {
+        assert_eq!(autonomy_ceiling_mode(AutonomyLevel::Off), TaskMode::Plan);
+        assert_eq!(
+            autonomy_ceiling_mode(AutonomyLevel::Observe),
+            TaskMode::Plan
+        );
+        assert_eq!(
+            autonomy_ceiling_mode(AutonomyLevel::Suggest),
+            TaskMode::Goal
+        );
+        assert_eq!(autonomy_ceiling_mode(AutonomyLevel::Act), TaskMode::Yolo);
+        // Defaults never exceed the ceiling and never start at Yolo.
+        assert_eq!(
+            TaskMode::Goal.clamp_to(autonomy_ceiling_mode(AutonomyLevel::Off)),
+            TaskMode::Plan
+        );
+        assert_eq!(
+            TaskMode::Goal.clamp_to(autonomy_ceiling_mode(AutonomyLevel::Suggest)),
+            TaskMode::Goal
+        );
+        assert_eq!(
+            TaskMode::Goal.clamp_to(autonomy_ceiling_mode(AutonomyLevel::Act)),
+            TaskMode::Goal
+        );
+    }
+
+    #[test]
+    fn mode_roundtrips_through_metadata() {
+        let mut task = Task {
+            id: "t".to_string(),
+            task_number: 1,
+            title: "t".to_string(),
+            description: None,
+            status: TaskStatus::Ready,
+            priority: TaskPriority::Medium,
+            owner_agent_id: "a".to_string(),
+            assigned_agent_id: None,
+            subtasks: Vec::new(),
+            metadata: serde_json::json!({}),
+            goal_id: None,
+            source_memory_id: None,
+            worker_id: None,
+            worker_type: None,
+            project_id: None,
+            repo_id: None,
+            worktree_mode: None,
+            worktree_id: None,
+            required_skills: Vec::new(),
+            depends_on: Vec::new(),
+            revision: 1,
+            created_by: "branch".to_string(),
+            approved_at: None,
+            approved_by: None,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            completed_at: None,
+        };
+        // Nothing stored yet.
+        assert_eq!(task.mode(), None);
+        // Persist via `set_mode` and read it back.
+        task.set_mode(TaskMode::Yolo);
+        assert_eq!(task.mode(), Some(TaskMode::Yolo));
+        // Unknown / foreign values degrade to None rather than erroring.
+        task.metadata["mode"] = serde_json::json!("not-a-mode");
+        assert_eq!(task.mode(), None);
     }
 }
 
@@ -432,6 +525,8 @@ pub struct CreateTaskInput {
     pub worktree_mode: Option<TaskWorktreeMode>,
     pub worktree_id: Option<String>,
     pub required_skills: Vec<String>,
+    /// Autonomy mode to store on the task (kept in `metadata`).
+    pub mode: Option<TaskMode>,
     /// Attribution recorded on the task's revision 1.
     pub context: TaskMutationContext,
 }
@@ -455,6 +550,7 @@ impl Default for CreateTaskInput {
             worktree_mode: None,
             worktree_id: None,
             required_skills: Vec::new(),
+            mode: None,
             context: TaskMutationContext::default(),
         }
     }
@@ -561,7 +657,11 @@ impl TaskStore {
     ) -> Result<Task> {
         let subtasks_json =
             serde_json::to_string(&input.subtasks).context("failed to serialize subtasks")?;
-        let metadata_json = input.metadata.to_string();
+        let mut metadata = input.metadata.clone();
+        if let Some(mode) = input.mode {
+            metadata["mode"] = Value::String(mode.to_string());
+        }
+        let metadata_json = metadata.to_string();
         let required_skills_json = serde_json::to_string(&input.required_skills)
             .context("failed to serialize required skills")?;
         input.context.validate()?;
