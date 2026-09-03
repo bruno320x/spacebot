@@ -4292,7 +4292,7 @@ impl Channel {
 
                 // Record worker completion in working memory.
                 let worker_summary = if result.len() > 200 {
-                    format!("{}...", &result[..200])
+                    format!("{}...", &result[..result.floor_char_boundary(200)])
                 } else {
                     result.clone()
                 };

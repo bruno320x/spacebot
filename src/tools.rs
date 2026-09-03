@@ -595,6 +595,35 @@ pub async fn add_channel_tools(
     handle
         .add_tool(GoalListTool::new(state.deps.goal_store.clone()))
         .await?;
+    // Channels create and manage task-board tasks directly. Task tools were
+    // branch-only, which made chat-driven creation fail with ToolNotFound and
+    // forced the model into an opaque branch hop. The mode argument (plan /
+    // goal / vibe / yolo) is clamped to the agent autonomy ceiling here.
+    let mut channel_task_create = TaskCreateTool::new(
+        state.deps.task_store.clone(),
+        state.deps.agent_id.to_string(),
+        "channel",
+    )
+    .with_execution_context(
+        state.deps.project_store.clone(),
+        state.deps.runtime_config.clone(),
+    );
+    if let Some(api) = &state.deps.api_state {
+        channel_task_create = channel_task_create.with_api_state(api.clone());
+    }
+    handle.add_tool(channel_task_create).await?;
+    handle
+        .add_tool(TaskListTool::new(
+            state.deps.task_store.clone(),
+            state.deps.agent_id.to_string(),
+        ))
+        .await?;
+    handle
+        .add_tool(TaskUpdateTool::for_branch(
+            state.deps.task_store.clone(),
+            state.deps.agent_id.clone(),
+        ))
+        .await?;
     // Add attachment recall tool when save_attachments is enabled
     if state
         .deps
@@ -923,6 +952,9 @@ pub async fn remove_channel_tools(
     handle.remove_tool(ReactTool::NAME).await?;
     handle.remove_tool(ProjectManageTool::NAME).await?;
     handle.remove_tool(GoalListTool::NAME).await?;
+    remove_optional_tool(handle, TaskCreateTool::NAME).await;
+    remove_optional_tool(handle, TaskListTool::NAME).await;
+    remove_optional_tool(handle, TaskUpdateTool::NAME).await;
     // These tools are registered per-profile, so not every channel has them;
     // removal is idempotent and only surfaces server failures.
     remove_optional_tool(handle, CronTool::NAME).await;

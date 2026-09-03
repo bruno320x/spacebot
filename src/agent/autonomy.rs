@@ -758,6 +758,12 @@ fn render_task_line(task: &Task, agent_id: &str, prior_attempts: Option<&str>) -
     if !plan.is_empty() {
         line.push_str(&format!(" [{}]", plan.summary()));
     }
+    // Surface the task autonomy mode so the executing agent honors its
+    // contract: plan = research only (propose, execute nothing), yolo =
+    // guardrails off, act without approval (explicit user request).
+    if let Some(mode) = task.mode() {
+        line.push_str(&format!(" [mode: {mode}: {}]", mode.description()));
+    }
     // Surface ordering so runs don't re-derive the pipeline from prose.
     let blocked_by = task.blocked_by();
     if !blocked_by.is_empty() {
