@@ -41,6 +41,7 @@ pub mod tasks;
 #[cfg(feature = "metrics")]
 pub mod telemetry;
 pub mod tools;
+pub mod tui;
 pub mod update;
 pub mod wakes;
 pub mod wiki;
