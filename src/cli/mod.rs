@@ -19,6 +19,7 @@ mod dashboard;
 mod desktop;
 mod ingest;
 mod mcp;
+mod mcp_serve;
 mod memory;
 mod messaging;
 mod model;

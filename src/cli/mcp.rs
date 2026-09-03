@@ -76,6 +76,11 @@ pub enum McpCommand {
     },
     /// Per-agent MCP connection status
     Status,
+    /// Run a stdio MCP server backed by the daemon (for editors)
+    Serve {
+        #[command(flatten)]
+        args: super::mcp_serve::McpServeArgs,
+    },
 }
 
 pub async fn run(ctx: &super::Context, cmd: McpCommand) -> anyhow::Result<()> {
@@ -194,6 +199,7 @@ pub async fn run(ctx: &super::Context, cmd: McpCommand) -> anyhow::Result<()> {
                 .await?;
             finish_mutation(ctx, value)
         }
+        McpCommand::Serve { args } => super::mcp_serve::run(ctx, args).await,
         McpCommand::Status => {
             let value = client.get("mcp/status").await?;
             if ctx.json {
