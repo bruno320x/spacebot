@@ -243,12 +243,52 @@ pub(super) async fn delete_ingest_file(
     let pools = state.agent_pools.load();
     let pool = pools.get(&query.agent_id).ok_or(StatusCode::NOT_FOUND)?;
 
+    // Remove the source file from disk too (#604 Fix 3). Deleting only the
+    // row left the file in the ingest dir, so the next poll re-discovered it
+    // and re-created the row ("reappears"), re-ingesting it from scratch.
+    let workspaces = state.agent_workspaces.load();
+    let workspace = workspaces
+        .get(&query.agent_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let ingest_dir = workspace.join("ingest");
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT filename FROM ingestion_files WHERE content_hash = ?")
+            .bind(&query.content_hash)
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "failed to read ingest file record");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    if let Some((filename,)) = row {
+        let path = ingest_dir.join(&filename);
+        if let Err(error) = tokio::fs::remove_file(&path).await {
+            tracing::debug!(
+                path = %path.display(),
+                %error,
+                "ingest delete: source file already gone or unreadable"
+            );
+        }
+    }
+
     sqlx::query("DELETE FROM ingestion_files WHERE content_hash = ?")
         .bind(&query.content_hash)
         .execute(pool)
         .await
         .map_err(|error| {
             tracing::warn!(%error, "failed to delete ingest file record");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // Purge chunk progress for the hash; otherwise stale progress rows would
+    // make a later re-upload of identical content skip already-"completed"
+    // chunks incorrectly.
+    sqlx::query("DELETE FROM ingestion_progress WHERE content_hash = ?")
+        .bind(&query.content_hash)
+        .execute(pool)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "failed to purge ingest progress");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 

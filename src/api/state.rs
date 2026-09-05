@@ -238,6 +238,19 @@ pub struct ApiState {
     /// Live channel states for active channels, keyed by channel_id.
     /// Used by the cancel API to abort workers and branches.
     pub channel_states: RwLock<HashMap<String, ChannelState>>,
+    /// Agent-level registries of channel-less (cortex/autonomy) worker
+    /// controls, keyed by agent id. Registered when an agent starts; lets the
+    /// cancel API reach detached workers no channel owns (#653).
+    pub detached_worker_registries: RwLock<
+        HashMap<
+            String,
+            Arc<
+                tokio::sync::RwLock<
+                    HashMap<crate::WorkerId, crate::agent::channel_dispatch::WorkerTaskControl>,
+                >,
+            >,
+        >,
+    >,
     /// Per-agent cortex chat sessions.
     pub cortex_chat_sessions: arc_swap::ArcSwap<HashMap<String, Arc<CortexChatSession>>>,
     /// Per-agent workspace paths for file tool access.
@@ -597,6 +610,7 @@ impl ApiState {
             memory_searches: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             channel_status_blocks: RwLock::new(HashMap::new()),
             channel_states: RwLock::new(HashMap::new()),
+            detached_worker_registries: RwLock::new(HashMap::new()),
             cortex_chat_sessions: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             agent_workspaces: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             agent_identity_dirs: arc_swap::ArcSwap::from_pointee(HashMap::new()),
@@ -667,6 +681,45 @@ impl ApiState {
     }
 
     /// Remove a channel's state when it's dropped.
+    /// Register an agent's detached-worker registry so the cancel API can
+    /// abort channel-less workers spawned by that agent (#653).
+    pub async fn register_detached_workers(
+        &self,
+        agent_id: String,
+        registry: Arc<
+            tokio::sync::RwLock<
+                HashMap<crate::WorkerId, crate::agent::channel_dispatch::WorkerTaskControl>,
+            >,
+        >,
+    ) {
+        self.detached_worker_registries
+            .write()
+            .await
+            .insert(agent_id, registry);
+    }
+
+    /// Cancel a channel-less worker that is still live in this process. Looks
+    /// across every agent's detached-worker registry. Returns true when found
+    /// and aborted.
+    pub async fn cancel_detached_worker(&self, worker_id: &crate::WorkerId) -> bool {
+        let registries = self.detached_worker_registries.read().await;
+        for registry in registries.values() {
+            let mut map = registry.write().await;
+            let Some(mut control) = map.remove(worker_id) else {
+                continue;
+            };
+            control.cancel_tx.send_replace(true);
+            if tokio::time::timeout(std::time::Duration::from_millis(500), &mut control.handle)
+                .await
+                .is_err()
+            {
+                control.handle.abort();
+            }
+            return true;
+        }
+        false
+    }
+
     pub async fn unregister_channel_state(&self, channel_id: &str) {
         self.channel_states.write().await.remove(channel_id);
     }

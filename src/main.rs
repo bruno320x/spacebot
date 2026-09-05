@@ -1414,6 +1414,15 @@ async fn run(
 
                     // Load per-conversation settings (idle worker resume).
                     // Try portal store first, then channel_settings for platform channels.
+                    // `[agents.channel]` config (response_mode, save_attachments) is
+                    // threaded through as the agent default so platform channels honor
+                    // it (upstream #550).
+                    let agent_channel_defaults = {
+                        let channel_config = agent.deps.runtime_config.channel_config.load();
+                        spacebot::conversation::settings::ConversationSettings::from_agent_channel_config(
+                            &channel_config,
+                        )
+                    };
                     let resolved_settings = {
                         let agent_id_str = agent_id.to_string();
                         let portal_store = spacebot::conversation::PortalConversationStore::new(
@@ -1427,7 +1436,7 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     conv.settings.as_ref(),
                                     None,
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                             Ok(None) => {
@@ -1436,7 +1445,7 @@ async fn run(
                                         spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                             Some(&settings),
                                             None,
-                                            None,
+                                            Some(&agent_channel_defaults),
                                         )
                                     }
                                     Ok(None) => {
@@ -1489,6 +1498,12 @@ async fn run(
                         .await;
                     api_state
                         .register_channel_state(conversation_id.clone(), channel.state.clone())
+                        .await;
+                    api_state
+                        .register_detached_workers(
+                            agent.deps.agent_id.to_string(),
+                            agent.deps.detached_workers.clone(),
+                        )
                         .await;
 
                     let backfill_count = agent.config.history_backfill_count();
@@ -1785,6 +1800,15 @@ async fn run(
 
                     // Load per-conversation settings.
                     // Resolution: per-channel DB override > binding defaults > agent defaults > system defaults
+                    // `[agents.channel]` config (response_mode, save_attachments) is
+                    // threaded through as the agent default so platform channels honor
+                    // it (upstream #550).
+                    let agent_channel_defaults = {
+                        let channel_config = agent.deps.runtime_config.channel_config.load();
+                        spacebot::conversation::settings::ConversationSettings::from_agent_channel_config(
+                            &channel_config,
+                        )
+                    };
                     let resolved_settings = if message.adapter.as_deref() == Some("portal") {
                         // Portal: load from portal_conversations table.
                         let store = spacebot::conversation::PortalConversationStore::new(
@@ -1795,14 +1819,14 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     conv.settings.as_ref(),
                                     binding_settings.as_ref(),
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                             Ok(None) => {
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                             Err(error) => {
@@ -1814,7 +1838,7 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                         }
@@ -1828,14 +1852,14 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     Some(&settings),
                                     binding_settings.as_ref(),
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                             Ok(None) => {
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                             Err(error) => {
@@ -1847,7 +1871,7 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
-                                    None,
+                                    Some(&agent_channel_defaults),
                                 )
                             }
                         }
@@ -1882,6 +1906,10 @@ async fn run(
                     api_state.register_channel_state(
                         conversation_id.clone(),
                         channel.state.clone(),
+                    ).await;
+                    api_state.register_detached_workers(
+                        agent.deps.agent_id.to_string(),
+                        agent.deps.detached_workers.clone(),
                     ).await;
 
                     // Backfill recent message history from the platform.
@@ -2690,6 +2718,7 @@ async fn initialize_agents(
                 spacebot::agent::process_control::ProcessControlRegistry::new(),
             ),
             child_registry: Arc::new(spacebot::supervisor::ChildRegistry::new()),
+            detached_workers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             injection_tx: injection_tx.clone(),
             working_memory,
             api_state: Some(api_state.clone()),

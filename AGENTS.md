@@ -2,6 +2,17 @@
 
 Implementation guide for coding agents working on Spacebot. Read `RUST_STYLE_GUIDE.md` before writing any code.
 
+## Builds on This Machine (User Rule — DO NOT VIOLATE)
+
+The owner (Orhan) runs this dev machine interactively. `cargo build` / `cargo test` / long
+`cargo check` runs are heavy and visibly slow the machine down. **NEVER start a build or test
+run during the day without asking first.** Compiles happen only in the evening / when Orhan is
+away and explicitly approves (he usually says: "akşam yapacağız"). Prefer lightweight
+verification (`cargo check` under `nice -n 10 ionice -c 3 -j 4`, reading code, DB queries)
+and leave full builds + functional tests for an approved build window. If a build is approved,
+always run it with `nice -n 10 ionice -c 3` and low parallelism (`-j 4`/`-j 8`).
+
+
 ## What Spacebot Is
 
 A Rust agentic system where every LLM process has a dedicated role and delegation is the only way work gets done. It replaces the monolithic session model (one LLM thread doing conversation + thinking + tool execution + memory retrieval + compaction) with specialized processes that only do one thing.

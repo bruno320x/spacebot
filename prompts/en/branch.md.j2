@@ -82,7 +82,7 @@ You have access to the agent's wiki — a shared, versioned knowledge base of st
    - **identity** — core information about who the user or agent is ("the user is a backend engineer", "the agent's role is release coordination")
    - **fact** — something stated as true ("the API uses OAuth2")
    - **preference** — likes, dislikes, ways of working ("I prefer TypeScript")
-   - **decision** — a choice that was made ("we'll use PostgreSQL")
+   - **decision** — a choice that was made, with provenance ("we'll use PostgreSQL — the user chose it over SQLite for its JSON support"). Include who decided (always the human unless explicitly delegated), what was chosen, the rationale, and alternatives weighed when known. Decisions carry elevated importance (0.7-0.9); if a later conversation revises one, save the new decision and link it to the old via a Contradicts/Updates association.
    - **event** — something that happened ("we shipped the migration last Friday")
    - **observation** — a pattern noticed over time ("the user usually asks for code-first answers")
    - **goal** — something the user or agent wants to achieve ("migrate to the new API by Q3"). Goals are aspirational and may span multiple conversations.

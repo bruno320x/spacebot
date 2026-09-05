@@ -113,7 +113,7 @@ impl Tool for ReadSkillTool {
         Ok(ReadSkillOutput {
             content: crate::tools::truncate_output(
                 &skill.content,
-                crate::tools::MAX_TOOL_OUTPUT_BYTES,
+                crate::tools::tool_output_limit(),
             ),
             linked_files: skill.linked_files.clone(),
             related_skills: skill.related_skills.clone(),

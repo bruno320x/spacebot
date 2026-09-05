@@ -793,7 +793,8 @@ impl CutContext {
             ProcessType::Compactor,
             Some(self.channel_id.clone()),
             self.deps.event_tx.clone(),
-        );
+        )
+        .with_secret_scan_mode(self.deps.runtime_config.sandbox.load().secret_scanner);
 
         let prompt = build_cut_prompt(kind, messages, discarded_live, narrative);
         let mut cut_history = Vec::new();
@@ -886,7 +887,8 @@ impl RollupContext {
             ProcessType::Compactor,
             Some(self.channel_id.clone()),
             self.deps.event_tx.clone(),
-        );
+        )
+        .with_secret_scan_mode(self.deps.runtime_config.sandbox.load().secret_scanner);
         let prompt = build_rollup_prompt(sources);
         let mut history = Vec::new();
         let response = hook.prompt_once(&agent, &mut history, &prompt).await;

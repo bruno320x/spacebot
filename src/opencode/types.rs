@@ -646,7 +646,7 @@ pub fn part_to_opencode_part(part: &Part) -> Option<OpenCodePart> {
                         }
                     }),
                     output: output.as_ref().map(|o| {
-                        crate::tools::truncate_output(o, crate::tools::MAX_TOOL_OUTPUT_BYTES)
+                        crate::tools::truncate_output(o, crate::tools::tool_output_limit())
                     }),
                 },
                 Some(ToolState::Error { error, .. }) => OpenCodeToolState::Error {

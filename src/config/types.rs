@@ -263,8 +263,12 @@ impl ToolUseEnforcement {
         let model_lower = model.to_lowercase();
         match self {
             Self::Auto => {
-                // Match GPT and Codex models by default
-                model_lower.contains("gpt") || model_lower.contains("codex")
+                // Match GPT/Codex by default, plus Inception (diffusion models
+                // tend to emit prose instead of tool calls; the enforcement
+                // prompt keeps them calling tools).
+                model_lower.contains("gpt")
+                    || model_lower.contains("codex")
+                    || model_lower.contains("inception")
             }
             Self::Always => true,
             Self::Never => false,
@@ -638,6 +642,9 @@ pub struct DefaultsConfig {
     pub routing: RoutingConfig,
     pub max_concurrent_branches: usize,
     pub max_concurrent_workers: usize,
+    /// Cap on tool output shown to the model (bytes). Defaults to
+    /// `crate::tools::MAX_TOOL_OUTPUT_BYTES` (50 KB).
+    pub max_tool_output_bytes: usize,
     pub max_turns: usize,
     pub branch_max_turns: usize,
     pub context_window: usize,
@@ -1043,6 +1050,11 @@ pub struct IngestionConfig {
     /// Target chunk size in characters. Chunks may be slightly larger to avoid
     /// splitting mid-line.
     pub chunk_size: usize,
+    /// Maximum ingestion attempts per file before it is quarantined. After a
+    /// chunk failure the file is retried on the next poll with exponential
+    /// backoff; once this many attempts are exhausted the file is marked
+    /// `quarantined` and skipped permanently (its source file stays on disk).
+    pub max_attempts: u64,
 }
 
 impl Default for IngestionConfig {
@@ -1051,6 +1063,7 @@ impl Default for IngestionConfig {
             enabled: true,
             poll_interval_secs: 30,
             chunk_size: 4000,
+            max_attempts: 5,
         }
     }
 }
@@ -1768,6 +1781,8 @@ pub struct ResolvedAgentConfig {
     pub routing: RoutingConfig,
     pub max_concurrent_branches: usize,
     pub max_concurrent_workers: usize,
+    /// Cap on tool output shown to the model (bytes).
+    pub max_tool_output_bytes: usize,
     pub max_turns: usize,
     pub branch_max_turns: usize,
     pub context_window: usize,
@@ -1806,6 +1821,7 @@ impl Default for DefaultsConfig {
             routing: RoutingConfig::default(),
             max_concurrent_branches: 5,
             max_concurrent_workers: 5,
+            max_tool_output_bytes: crate::tools::MAX_TOOL_OUTPUT_BYTES,
             max_turns: 5,
             branch_max_turns: 50,
             context_window: 128_000,
@@ -1860,6 +1876,7 @@ impl AgentConfig {
             gradient_start: self.gradient_start.clone(),
             gradient_end: self.gradient_end.clone(),
             human_profile_cap: defaults.human_profile_cap,
+            max_tool_output_bytes: defaults.max_tool_output_bytes,
             workspace: self
                 .workspace
                 .clone()

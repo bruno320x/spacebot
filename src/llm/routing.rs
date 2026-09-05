@@ -144,6 +144,9 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         || lower.contains("error decoding response body")
         // SSE stream cut off before its terminal event
         || lower.contains("missing response.completed")
+        // Provider-side internal panics relayed in-band (e.g. a gateway's own
+        // RefCell crash under concurrent load — #469). Transient by nature.
+        || lower.contains("already borrowed")
 }
 
 /// Whether a completion error indicates the provider rejected the model id
@@ -223,6 +226,17 @@ pub fn is_tool_history_mismatch_error(error_message: &str) -> bool {
 /// and retry instead of dying.
 pub fn is_context_overflow_error(error_message: &str) -> bool {
     let lower = error_message.to_lowercase();
+    // Rate-limit refusals (e.g. \"429 Too Many Requests: rate limit reached:
+    // input token limit exceeded\") mention token limits but are not context
+    // overflows. Mistaking them for overflows lowers the learned context
+    // ceiling until even the system prompt cannot fit.
+    if lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains(" 429 ")
+        || lower.starts_with("429")
+    {
+        return false;
+    }
     lower.contains("context length")
         || lower.contains("maximum context")
         || lower.contains("token limit")
@@ -230,6 +244,11 @@ pub fn is_context_overflow_error(error_message: &str) -> bool {
         || lower.contains("request too large")
         || lower.contains("content_too_large")
         || lower.contains("max_tokens")
+        // stop_reason markers from Anthropic-style empty completions
+        // (model_context_window_exceeded / context_window_limit_reached)
+        || lower.contains("context_window_exceeded")
+        || lower.contains("context_window_limit_reached")
+        || lower.contains("context_length_exceeded")
         || (lower.contains("maximum") && lower.contains("tokens"))
 }
 
@@ -602,6 +621,10 @@ mod tests {
         assert!(is_retriable_error("internal error"));
         assert!(is_retriable_error("server error"));
         assert!(is_retriable_error("overloaded"));
+        // Provider gateway internal panic relayed via SSE error event (#469)
+        assert!(is_retriable_error(
+            "OpenAI-compatible streaming error: Already borrowed"
+        ));
     }
 
     #[test]

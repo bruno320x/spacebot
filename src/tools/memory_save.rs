@@ -320,6 +320,35 @@ impl Tool for MemorySaveTool {
         // Save to SQLite database
         let store = self.memory_search.store();
 
+        // Exact-duplicate suppression: a live memory with identical content
+        // and type already exists (e.g. an ingestion chunk was re-processed
+        // after a partial failure, or a branch re-saved the same fact).
+        // Reuse the existing row instead of inserting a second copy, so
+        // retries stay idempotent and repeated saves cannot duplicate rows.
+        // Human anchors are excluded — they resolve through the per-human
+        // merge path below.
+        if memory_type != MemoryType::Human {
+            if let Some(existing_id) = store
+                .find_exact_duplicate(&args.content, memory_type)
+                .await
+                .map_err(|e| {
+                    MemorySaveError(format!("Failed to check for duplicate memory: {e}"))
+                })?
+            {
+                if let Some(contract_state) = &self.contract_state {
+                    contract_state.record_saved_memory_id(existing_id.clone());
+                }
+                return Ok(MemorySaveOutput {
+                    memory_id: existing_id,
+                    success: true,
+                    message:
+                        "memory already exists - reused existing record (no duplicate created)"
+                            .to_string(),
+                    consolidation: None,
+                });
+            }
+        }
+
         // Human anchors (3.1a): a human-typed save resolves through the
         // per-human anchor mapping — merging into the existing anchor for
         // that human or creating and mapping a fresh one — then continues
@@ -787,5 +816,40 @@ mod tests {
             .unwrap()
             .expect("anchor should remain");
         assert_eq!(anchor.content, content);
+    }
+
+    #[tokio::test]
+    async fn duplicate_save_reuses_existing_memory() {
+        let (memory_search, _dir) = memory_search_fixture().await;
+        let tool = MemorySaveTool::new(memory_search.clone());
+        let args = || MemorySaveArgs {
+            content: "The sky is blue on clear days.".to_string(),
+            memory_type: "fact".to_string(),
+            importance: None,
+            source: None,
+            channel_id: None,
+            human_id: None,
+            associations: vec![],
+        };
+
+        let first = tool.call(args()).await.expect("first save should succeed");
+        let second = tool.call(args()).await.expect("second save should succeed");
+        assert_eq!(
+            first.memory_id, second.memory_id,
+            "an exact duplicate must reuse the existing memory id"
+        );
+        assert!(
+            second.message.contains("no duplicate created"),
+            "second save must report dedup, got: {}",
+            second.message
+        );
+
+        let store = memory_search.store();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memories WHERE content = ?")
+            .bind("The sky is blue on clear days.")
+            .fetch_one(store.pool())
+            .await
+            .expect("count query");
+        assert_eq!(count, 1, "an exact duplicate must not insert a second row");
     }
 }

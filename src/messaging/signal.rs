@@ -104,8 +104,8 @@ fn redact_identifier(id: &str) -> String {
     if id.len() <= 8 {
         return "[redacted]".to_string();
     }
-    let prefix = &id[..4.min(id.len())];
-    let suffix = &id[id.len().saturating_sub(4)..];
+    let prefix = &id[..id.floor_char_boundary(4.min(id.len()))];
+    let suffix = &id[id.floor_char_boundary(id.len().saturating_sub(4))..];
     format!("{}****{}", prefix, suffix)
 }
 
@@ -1006,7 +1006,10 @@ impl Messaging for SignalAdapter {
                                     // Log response body at debug level only (may contain sensitive data)
                                     if let Ok(body_text) = response.text().await {
                                         let truncated = if body_text.len() > 200 {
-                                            format!("{}...<truncated>", &body_text[..200])
+                                            format!(
+                                                "{}...<truncated>",
+                                                &body_text[..body_text.floor_char_boundary(200)]
+                                            )
                                         } else {
                                             body_text
                                         };

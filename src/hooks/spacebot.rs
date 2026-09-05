@@ -1,6 +1,7 @@
 //! SpacebotHook: Prompt hook for channels, branches, and workers.
 
 use crate::hooks::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
+use crate::secrets::scrub::SecretScanMode;
 use crate::tools::{
     BranchDelegationState, MemoryPersistenceContractState, MemoryPersistenceTerminalOutcome,
 };
@@ -71,6 +72,11 @@ pub struct SpacebotHook {
     /// `prompt_with_tool_nudge_retry` loop reads and clears this buffer to
     /// append the messages to history before re-prompting.
     injected_messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Secret leak scan mode for this process (default: strict).
+    /// Set per process at construction from the agent's `[agents.sandbox]
+    /// `secret_scanner` config. Controls the regex leak-detection layer
+    /// (Layer 2); exact stored-secret scrubbing always runs.
+    secret_scan_mode: SecretScanMode,
     memory_persistence_contract: Option<Arc<MemoryPersistenceContractState>>,
     branch_delegation: Option<Arc<BranchDelegationState>>,
     tool_call_registry: Option<crate::tools::ToolCallRegistry>,
@@ -129,6 +135,7 @@ impl SpacebotHook {
             channel_id,
             event_tx,
             tool_nudge_policy: ToolNudgePolicy::for_process(process_type),
+            secret_scan_mode: SecretScanMode::Strict,
             completion_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             nudge_request_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             completion_contract_request_active: std::sync::Arc::new(
@@ -162,6 +169,16 @@ impl SpacebotHook {
         contract_state: Arc<MemoryPersistenceContractState>,
     ) -> Self {
         self.memory_persistence_contract = Some(contract_state);
+        self
+    }
+
+    /// Set the secret leak scan mode for this process (default: strict).
+    ///
+    /// Called at hook construction from the agent's `[agents.sandbox]
+    /// secret_scanner` config. Only the regex leak-detection layer (Layer 2)
+    /// is affected — exact stored-secret scrubbing always runs.
+    pub fn with_secret_scan_mode(mut self, mode: SecretScanMode) -> Self {
+        self.secret_scan_mode = mode;
         self
     }
 
@@ -466,6 +483,15 @@ impl SpacebotHook {
         }
     }
 
+    /// Timeout for a single LLM completion call.
+    ///
+    /// Prevents a hung API connection from blocking a branch, compactor,
+    /// ingestion, or channel process indefinitely. Set to 5 minutes —
+    /// generous for complex completions but catches genuine connection
+    /// stalls. Provider-level timeouts (reqwest 120s, stream 30min) are too
+    /// far from the caller to unblock a stuck turn.
+    const LLM_CALL_TIMEOUT_SECS: u64 = 300;
+
     /// Prompt once with the hook attached and no retry loop.
     pub async fn prompt_once<M>(
         &self,
@@ -478,11 +504,26 @@ impl SpacebotHook {
     {
         self.reset_tool_nudge_state();
         self.set_tool_nudge_request_active(false);
-        agent
-            .prompt(prompt)
-            .with_history(history)
-            .with_hook(self.clone())
-            .await
+        tokio::time::timeout(
+            std::time::Duration::from_secs(Self::LLM_CALL_TIMEOUT_SECS),
+            agent
+                .prompt(prompt)
+                .with_history(history)
+                .with_hook(self.clone()),
+        )
+        .await
+        .map_err(|_| {
+            PromptError::CompletionError(rig::completion::CompletionError::from(Box::new(
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "LLM call timed out after {}s (prompt_once)",
+                        Self::LLM_CALL_TIMEOUT_SECS
+                    ),
+                ),
+            )
+                as Box<dyn std::error::Error + Send + Sync + 'static>))
+        })?
     }
 
     /// Prompt once using Rig's streaming path so text/tool deltas reach the hook.
@@ -539,13 +580,27 @@ impl SpacebotHook {
                 });
             }
 
-            let request = agent
-                .stream_completion(
+            let request = tokio::time::timeout(
+                std::time::Duration::from_secs(Self::LLM_CALL_TIMEOUT_SECS),
+                agent.stream_completion(
                     current_prompt.clone(),
                     chat_history[..chat_history.len() - 1].to_vec(),
+                ),
+            )
+            .await
+            .map_err(|_| {
+                PromptError::CompletionError(rig::completion::CompletionError::from(Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "LLM stream_completion request timed out after {}s",
+                            Self::LLM_CALL_TIMEOUT_SECS
+                        ),
+                    ),
                 )
-                .await
-                .map_err(PromptError::CompletionError)?;
+                    as Box<dyn std::error::Error + Send + Sync + 'static>))
+            })?
+            .map_err(PromptError::CompletionError)?;
 
             let mut stream = request
                 .stream()
@@ -826,7 +881,7 @@ impl SpacebotHook {
     ///
     /// Delegates to the shared implementation in `secrets::scrub`.
     fn scan_for_leaks(&self, content: &str) -> Option<String> {
-        crate::secrets::scrub::scan_for_leaks(content)
+        crate::secrets::scrub::scan_for_leaks_with_mode(content, self.secret_scan_mode)
     }
 
     /// Apply shared safety checks for tool output before any downstream handling.
@@ -868,7 +923,7 @@ impl SpacebotHook {
                     tracing::error!(
                         process_id = %self.process_id,
                         tool_name = %tool_name,
-                        leak_prefix = %&leak[..leak.len().min(8)],
+                        leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                         "secret leak detected in tool output, terminating agent"
                     );
                     return HookAction::Terminate {
@@ -916,7 +971,7 @@ impl SpacebotHook {
 
     pub(crate) fn emit_tool_completed_event(&self, tool_name: &str, call_id: String, result: &str) {
         let capped_result =
-            crate::tools::truncate_output(result, crate::tools::MAX_TOOL_OUTPUT_BYTES);
+            crate::tools::truncate_output(result, crate::tools::tool_output_limit());
         self.emit_tool_completed_event_from_capped(tool_name, call_id, capped_result);
     }
 
@@ -1304,7 +1359,7 @@ where
             tracing::error!(
                 process_id = %self.process_id,
                 tool_name = %tool_name,
-                leak_prefix = %&leak[..leak.len().min(8)],
+                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                 "secret leak detected in reply arguments, blocking call"
             );
             return ToolCallHookAction::Skip {
@@ -1377,7 +1432,7 @@ where
             tracing::error!(
                 process_id = %self.process_id,
                 tool_name = %tool_name,
-                leak_prefix = %&leak[..leak.len().min(8)],
+                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                 "secret leak detected in reply result, terminating channel turn"
             );
             self.record_tool_result_metrics(tool_name, internal_call_id);
@@ -1401,9 +1456,10 @@ where
         // processes, scrub leak patterns from the event payload so secrets
         // don't reach the SSE dashboard.
         if matches!(self.process_type, ProcessType::Worker | ProcessType::Branch) {
-            let scrubbed = crate::secrets::scrub::scrub_leaks(result);
+            let scrubbed =
+                crate::secrets::scrub::scrub_leaks_with_mode(result, self.secret_scan_mode);
             let capped =
-                crate::tools::truncate_output(&scrubbed, crate::tools::MAX_TOOL_OUTPUT_BYTES);
+                crate::tools::truncate_output(&scrubbed, crate::tools::tool_output_limit());
             self.emit_tool_completed_event_from_capped(tool_name, call_id, capped);
         } else {
             self.emit_tool_completed_event(tool_name, call_id, result);

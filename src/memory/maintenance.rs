@@ -15,7 +15,6 @@ use std::sync::Arc;
 const MAX_MAINTENANCE_MERGE_SOURCE_MEMORIES: i64 = 2_000;
 const MAX_MAINTENANCE_MERGES_PER_PASS: usize = 500;
 const MAX_MAINTENANCE_SIMILAR_CANDIDATES: usize = 25;
-const MAX_MERGED_MEMORY_CONTENT_BYTES: usize = 50_000;
 
 /// Maintenance configuration.
 #[derive(Debug, Clone)]
@@ -312,29 +311,18 @@ fn choose_merge_pair(first: &Memory, second: &Memory) -> (Memory, Memory) {
 }
 
 fn merged_memory_content(winner: String, loser: &str) -> String {
-    let winner_trimmed = winner.trim_end();
-    let loser_trimmed = loser.trim_end();
+    // Canonical merge (upstream #604): keep the importance-winner's content as
+    // the single canonical version instead of concatenating
+    // `winner\n\nloser`. Concatenation bloated a single memory with many
+    // reworded copies of the same near-duplicate fact. Similarity-based merges
+    // treat the pair as the same fact, so the loser's wording is redundant.
+    let winner_trimmed = winner.trim();
+    let loser_trimmed = loser.trim();
 
-    if loser_trimmed.is_empty() {
+    if !winner_trimmed.is_empty() {
         return winner_trimmed.to_string();
     }
-
-    if winner_trimmed.contains(loser_trimmed) {
-        return winner_trimmed.to_string();
-    }
-
-    let merged = if winner_trimmed.is_empty() {
-        loser_trimmed.to_string()
-    } else {
-        format!("{winner_trimmed}\n\n{loser_trimmed}")
-    };
-
-    if merged.len() <= MAX_MERGED_MEMORY_CONTENT_BYTES {
-        return merged;
-    }
-
-    let boundary = merged.floor_char_boundary(MAX_MERGED_MEMORY_CONTENT_BYTES);
-    merged[..boundary].to_string()
+    loser_trimmed.to_string()
 }
 
 async fn merge_pair(
@@ -596,11 +584,10 @@ mod tests {
             .expect("failed to load survivor")
             .expect("survivor should exist");
         assert_eq!(updated_survivor.id, survivor.id);
-        assert!(
-            updated_survivor
-                .content
-                .contains("rust memory maintenance updated")
-        );
+        // Canonical merge (#604): the importance-winner's content survives
+        // as-is; the loser's reworded copy is NOT concatenated.
+        assert_eq!(updated_survivor.content, "rust memory maintenance");
+        assert!(!updated_survivor.content.contains("updated"));
 
         let forgotten_duplicate = store
             .load(&duplicate.id)
@@ -763,16 +750,11 @@ mod tests {
             .await
             .expect("failed to load survivor")
             .expect("survivor should exist");
-        assert!(
-            refreshed_survivor
-                .content
-                .contains("durable rust maintenance note update A")
-        );
-        assert!(
-            refreshed_survivor
-                .content
-                .contains("durable rust maintenance note update B")
-        );
+        // Canonical merge (#604): survivor (highest importance) content is
+        // kept whole; duplicate rewordings are dropped, not concatenated.
+        assert_eq!(refreshed_survivor.content, "durable rust maintenance note");
+        assert!(!refreshed_survivor.content.contains("update A"));
+        assert!(!refreshed_survivor.content.contains("update B"));
 
         for duplicate_id in [&duplicate_a.id, &duplicate_b.id] {
             let duplicate = store

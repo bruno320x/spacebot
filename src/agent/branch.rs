@@ -68,7 +68,8 @@ impl Branch {
             ProcessType::Branch,
             Some(channel_id.clone()),
             deps.event_tx.clone(),
-        );
+        )
+        .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
         if let Some(contract_state) = &execution_config.memory_persistence_contract {
             hook = hook.with_memory_persistence_contract(contract_state.clone());
         }
@@ -301,7 +302,10 @@ impl Branch {
         } else {
             conclusion
         };
-        let conclusion = crate::secrets::scrub::scrub_leaks(&conclusion);
+        let conclusion = crate::secrets::scrub::scrub_leaks_with_mode(
+            &conclusion,
+            self.deps.runtime_config.sandbox.load().secret_scanner,
+        );
 
         let transcript_steps =
             crate::conversation::worker_transcript::transcript_steps(&transcript_history);

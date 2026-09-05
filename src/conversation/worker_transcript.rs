@@ -3,7 +3,7 @@
 //! Converts a Rig `Vec<Message>` history into a flat `Vec<TranscriptStep>`,
 //! then serializes to gzipped JSON for compact storage on the `worker_runs` row.
 
-use crate::tools::{MAX_TOOL_OUTPUT_BYTES, truncate_output};
+use crate::tools::truncate_output;
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -204,7 +204,8 @@ pub fn convert_opencode_messages(messages: &[serde_json::Value]) -> (Vec<Transcr
                                 .and_then(|s| s.get("output"))
                                 .and_then(|o| o.as_str())
                                 .unwrap_or("");
-                            let truncated = truncate_output(output, MAX_TOOL_OUTPUT_BYTES);
+                            let truncated =
+                                truncate_output(output, crate::tools::tool_output_limit());
                             steps.push(TranscriptStep::ToolResult {
                                 call_id,
                                 name: tool_name.to_string(),
@@ -319,7 +320,7 @@ pub fn convert_opencode_parts(
                 match state {
                     OpenCodeToolState::Completed { output, .. } => {
                         let text = output.as_deref().unwrap_or("");
-                        let truncated = truncate_output(text, MAX_TOOL_OUTPUT_BYTES);
+                        let truncated = truncate_output(text, crate::tools::tool_output_limit());
                         steps.push(TranscriptStep::ToolResult {
                             call_id: id.clone(),
                             name: tool.clone(),
@@ -490,7 +491,8 @@ fn convert_history(history: &[rig::message::Message]) -> Vec<TranscriptStep> {
                                 .collect::<Vec<_>>()
                                 .join("\n");
 
-                            let truncated = truncate_output(&text, MAX_TOOL_OUTPUT_BYTES);
+                            let truncated =
+                                truncate_output(&text, crate::tools::tool_output_limit());
 
                             steps.push(TranscriptStep::ToolResult {
                                 call_id,

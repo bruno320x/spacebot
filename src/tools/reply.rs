@@ -475,7 +475,7 @@ impl Tool for ReplyTool {
         if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&converted_content) {
             tracing::error!(
                 conversation_id = %self.conversation_id,
-                leak_prefix = %&leak[..leak.len().min(8)],
+                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                 "reply tool blocked content matching secret pattern"
             );
             return Err(ReplyError(
@@ -488,7 +488,7 @@ impl Tool for ReplyTool {
         {
             tracing::error!(
                 conversation_id = %self.conversation_id,
-                leak_prefix = %&leak[..leak.len().min(8)],
+                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                 "reply tool blocked Slack blocks matching secret pattern"
             );
             return Err(ReplyError(

@@ -256,6 +256,28 @@ pub struct ConversationSettings {
     pub worker_context: WorkerContextMode,
 }
 
+impl ConversationSettings {
+    /// Convert an agent's resolved `[agents.channel]` config into
+    /// conversation settings. Only the fields the channel config actually
+    /// carries are populated; everything else inherits system defaults so
+    /// passing this as `agent_default` to `resolve()` never clobbers
+    /// binding/conversation-level overrides that are set.
+    pub fn from_agent_channel_config(channel: &crate::config::ChannelConfig) -> Self {
+        let response_mode = channel.response_mode.or_else(|| {
+            if channel.listen_only_mode {
+                Some(ResponseMode::Observe)
+            } else {
+                None
+            }
+        });
+        Self {
+            response_mode: response_mode.unwrap_or(ResponseMode::Active),
+            save_attachments: Some(channel.save_attachments),
+            ..Default::default()
+        }
+    }
+}
+
 /// Resolved conversation settings after applying defaults.
 /// This is what gets used at runtime.
 #[derive(Debug, Clone)]

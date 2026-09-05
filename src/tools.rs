@@ -383,7 +383,27 @@ where
 
 /// Maximum byte length for tool output strings (stdout, stderr, file content).
 /// ~50KB keeps a single tool result under ~12,500 tokens (at ~4 chars/token).
+/// This is the startup fallback; the resolved agent config
+/// (`[defaults] max_tool_output_bytes`) overrides it at runtime.
 pub const MAX_TOOL_OUTPUT_BYTES: usize = 50_000;
+
+/// Runtime tool-output cap, initialized from `MAX_TOOL_OUTPUT_BYTES` and
+/// replaced by `set_tool_output_limit` when the agent config is built, so the
+/// cap can be tuned per install without code changes (#504).
+static TOOL_OUTPUT_LIMIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(MAX_TOOL_OUTPUT_BYTES);
+
+/// Configure the runtime tool-output cap (bytes). Called during agent startup
+/// from the resolved config.
+pub fn set_tool_output_limit(bytes: usize) {
+    TOOL_OUTPUT_LIMIT.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Current runtime tool-output cap (bytes). Used at every truncation site so
+/// the configured value applies process-wide.
+pub fn tool_output_limit() -> usize {
+    TOOL_OUTPUT_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Maximum number of entries returned by directory listings.
 pub const MAX_DIR_ENTRIES: usize = 500;
@@ -624,6 +644,9 @@ pub async fn add_channel_tools(
             state.deps.agent_id.clone(),
         ))
         .await?;
+    // Self-documentation: channels can answer "what is Spacebot / how do you
+    // work?" directly from embedded docs instead of failing or guessing.
+    handle.add_tool(SpacebotDocsTool::new()).await?;
     // Add attachment recall tool when save_attachments is enabled
     if state
         .deps
@@ -955,6 +978,7 @@ pub async fn remove_channel_tools(
     remove_optional_tool(handle, TaskCreateTool::NAME).await;
     remove_optional_tool(handle, TaskListTool::NAME).await;
     remove_optional_tool(handle, TaskUpdateTool::NAME).await;
+    remove_optional_tool(handle, SpacebotDocsTool::NAME).await;
     // These tools are registered per-profile, so not every channel has them;
     // removal is idempotent and only surfaces server failures.
     remove_optional_tool(handle, CronTool::NAME).await;

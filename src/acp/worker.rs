@@ -10,6 +10,7 @@
 use crate::acp::types::*;
 use crate::agent::worker::WorkerTranscriptSnapshot;
 use crate::config::AcpPermissionMode;
+use crate::secrets::scrub::SecretScanMode;
 use crate::secrets::store::SecretsStore;
 use crate::{AgentId, ChannelId, ProcessEvent, WorkerId};
 
@@ -45,6 +46,10 @@ pub struct AcpWorker {
     pub system_prompt: Option<String>,
     /// Secrets store for exact-match scrubbing of tool secret values.
     pub secrets_store: Option<Arc<SecretsStore>>,
+    /// Secret scan mode for the regex leak-detection layer (Layer 2).
+    /// Mirrors the agent's `[agents.sandbox] secret_scanner` config; exact
+    /// stored-secret scrubbing always runs regardless of this mode.
+    pub secret_scan_mode: crate::secrets::scrub::SecretScanMode,
     /// Shared subprocess registry (when provided) — the subprocess is tracked
     /// under this worker's id so group cancellation can kill it even while
     /// the stdio driver is mid-wait. Ownership of the `Child` stays here.
@@ -83,6 +88,7 @@ impl AcpWorker {
             input_rx: None,
             system_prompt: None,
             secrets_store: None,
+            secret_scan_mode: SecretScanMode::Strict,
             child_registry: None,
             transcript_snapshot: crate::agent::worker::new_worker_transcript_snapshot(),
             child: None,
@@ -137,6 +143,12 @@ impl AcpWorker {
         self
     }
 
+    /// Set the secret leak scan mode for this worker's egress scrubbing.
+    pub fn with_secret_scan_mode(mut self, mode: SecretScanMode) -> Self {
+        self.secret_scan_mode = mode;
+        self
+    }
+
     pub fn transcript_snapshot(&self) -> WorkerTranscriptSnapshot {
         self.transcript_snapshot.clone()
     }
@@ -180,6 +192,16 @@ impl AcpWorker {
     /// Run the worker: spawn the agent subprocess, initialize the protocol,
     /// open a session, send the task, and monitor until completion.
     pub async fn run(mut self) -> anyhow::Result<AcpWorkerResult> {
+        // Ensure the agent's working directory exists before spawning, so the
+        // subprocess can be launched even when the task has not created the
+        // directory yet (e.g. a channel that hands the whole job to one ACP
+        // worker instead of first running a mkdir builtin worker).
+        if let Err(error) = tokio::fs::create_dir_all(&self.directory).await {
+            anyhow::bail!(
+                "failed to create ACP agent working dir '{}': {error}",
+                self.directory.display()
+            );
+        }
         let mut child = Command::new(&self.command)
             .args(&self.args)
             .current_dir(&self.directory)
@@ -234,7 +256,8 @@ impl AcpWorker {
         // Interactive follow-up loop.
         if let Some(mut input_rx) = self.input_rx.take() {
             let scrubbed = self.scrub_text(&result_text);
-            let scrubbed = crate::secrets::scrub::scrub_leaks(&scrubbed);
+            let scrubbed =
+                crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.secret_scan_mode);
             let _ = self.event_tx.send(ProcessEvent::WorkerInitialResult {
                 agent_id: self.agent_id.clone(),
                 worker_id: self.id,
@@ -270,7 +293,10 @@ impl AcpWorker {
                 };
                 if !turn_text.is_empty() {
                     let scrubbed = self.scrub_text(&turn_text);
-                    let scrubbed = crate::secrets::scrub::scrub_leaks(&scrubbed);
+                    let scrubbed = crate::secrets::scrub::scrub_leaks_with_mode(
+                        &scrubbed,
+                        self.secret_scan_mode,
+                    );
                     let _ = self.event_tx.send(ProcessEvent::WorkerInitialResult {
                         agent_id: self.agent_id.clone(),
                         worker_id: self.id,
@@ -373,10 +399,13 @@ impl AcpWorker {
                             accumulated.push_str(text);
                             accumulated.push('\n');
                             let scrubbed = self.scrub_text(&accumulated);
-                            if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&scrubbed) {
+                            if let Some(leak) = crate::secrets::scrub::scan_for_leaks_with_mode(
+                                &scrubbed,
+                                self.secret_scan_mode,
+                            ) {
                                 tracing::warn!(
                                     worker_id = %self.id,
-                                    leak_prefix = %&leak[..leak.len().min(8)],
+                                    leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                     "potential secret detected in ACP worker output"
                                 );
                             }

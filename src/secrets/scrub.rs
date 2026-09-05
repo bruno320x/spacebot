@@ -12,6 +12,7 @@
 //! redacted), and leak detection only fires on unknown/unstored secrets.
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 /// Regex patterns for known API key formats. Used by `scan_for_leaks()` to
@@ -47,6 +48,60 @@ static BASE64_SEGMENT: LazyLock<Regex> =
 static HEX_SEGMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?:0x)?([0-9a-f]{40,})").expect("hardcoded regex"));
 
+/// Secret leak scanning mode for agent output paths.
+///
+/// The fork has two layers: Layer 1 is exact-match redaction of *stored*
+/// secrets (always on — see `StreamScrubber`/`scrub_secrets`); Layer 2 is
+/// regex detection of *unknown* API-key patterns (`scan_for_leaks` /
+/// `scrub_leaks`). This mode toggles Layer 2 only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretScanMode {
+    /// Regex layer active everywhere (default — today's behavior).
+    Strict,
+    /// Regex layer skipped on egress/user-visible paths; only exact stored
+    /// secrets are scrubbed. Recommended when agents scrape public pages
+    /// that embed third-party keys (Algolia, Google Maps, etc.).
+    OwnSecretsOnly,
+    /// No scanning at all; content passes through unchanged.
+    Disabled,
+}
+
+impl Default for SecretScanMode {
+    fn default() -> Self {
+        Self::Strict
+    }
+}
+
+/// Regex-layer scan respecting the agent's configured scan mode.
+pub fn scan_for_leaks_with_mode(content: &str, mode: SecretScanMode) -> Option<String> {
+    if mode == SecretScanMode::Strict {
+        scan_for_leaks_strict(content)
+    } else {
+        None
+    }
+}
+
+/// Regex-layer scrub respecting the agent's configured scan mode.
+pub fn scrub_leaks_with_mode(content: &str, mode: SecretScanMode) -> String {
+    if mode == SecretScanMode::Strict {
+        scrub_leaks_strict(content)
+    } else {
+        content.to_string()
+    }
+}
+
+/// Strict-mode scan (default). Kept as the plain entry point so callers that
+/// do not carry a mode retain today's behavior.
+pub fn scan_for_leaks(content: &str) -> Option<String> {
+    scan_for_leaks_with_mode(content, SecretScanMode::Strict)
+}
+
+/// Strict-mode scrub (default). See `scan_for_leaks` for rationale.
+pub fn scrub_leaks(content: &str) -> String {
+    scrub_leaks_with_mode(content, SecretScanMode::Strict)
+}
+
 /// Check content against known API key patterns (plaintext only).
 pub fn match_leak_patterns(content: &str) -> Option<String> {
     for pattern in LEAK_PATTERNS.iter() {
@@ -62,7 +117,7 @@ pub fn match_leak_patterns(content: &str) -> Option<String> {
 /// Checks raw content first, then attempts URL-decoding, base64-decoding,
 /// and hex-decoding to catch secrets that an LLM might encode to evade
 /// plaintext pattern matching.
-pub fn scan_for_leaks(content: &str) -> Option<String> {
+fn scan_for_leaks_strict(content: &str) -> Option<String> {
     use base64::Engine;
 
     if let Some(matched) = match_leak_patterns(content) {
@@ -247,7 +302,7 @@ pub fn scrub_with_store(
 ///
 /// Does NOT check encoded forms (base64, hex, URL-encoded) — those are
 /// unlikely to appear in LLM-generated output text.
-pub fn scrub_leaks(content: &str) -> String {
+fn scrub_leaks_strict(content: &str) -> String {
     // First, redact full PEM blocks (header + body + footer) so the base64
     // key material is removed, not just the header line.
     let mut result = PEM_BLOCK
@@ -264,6 +319,52 @@ pub fn scrub_leaks(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_scan_mode_deserializes_all_variants() {
+        #[derive(serde::Deserialize)]
+        struct ModeHolder {
+            mode: SecretScanMode,
+        }
+        let parse = |value: &str| -> SecretScanMode {
+            toml::from_str::<ModeHolder>(&format!("mode = \"{value}\""))
+                .expect("mode parse")
+                .mode
+        };
+        let strict = parse("strict");
+        let own = parse("own_secrets_only");
+        let disabled = parse("disabled");
+        assert_eq!(strict, SecretScanMode::Strict);
+        assert_eq!(own, SecretScanMode::OwnSecretsOnly);
+        assert_eq!(disabled, SecretScanMode::Disabled);
+        assert_eq!(SecretScanMode::default(), SecretScanMode::Strict);
+    }
+
+    #[test]
+    fn mode_aware_scan_skips_regex_in_non_strict() {
+        let secret = "key is sk-ant-abc123456789012345678";
+        assert!(scan_for_leaks_with_mode(secret, SecretScanMode::Strict).is_some());
+        assert!(scan_for_leaks_with_mode(secret, SecretScanMode::OwnSecretsOnly).is_none());
+        assert!(scan_for_leaks_with_mode(secret, SecretScanMode::Disabled).is_none());
+        // Plain entry point keeps today's behavior.
+        assert!(scan_for_leaks(secret).is_some());
+    }
+
+    #[test]
+    fn mode_aware_scrub_passes_content_through_in_non_strict() {
+        let secret = "found key sk-ant-abc123456789012345678 in config";
+        let strict = scrub_leaks_with_mode(secret, SecretScanMode::Strict);
+        assert!(strict.contains("[LEAKED_SECRET_REDACTED]"));
+        assert_eq!(
+            scrub_leaks_with_mode(secret, SecretScanMode::OwnSecretsOnly),
+            secret
+        );
+        assert_eq!(
+            scrub_leaks_with_mode(secret, SecretScanMode::Disabled),
+            secret
+        );
+        assert_eq!(scrub_leaks(secret), strict);
+    }
 
     #[test]
     fn scrubber_redacts_exact_match() {

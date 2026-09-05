@@ -158,10 +158,14 @@ impl ControlPlane {
                 }
             }
         };
+        let agent_channel_defaults = {
+            let channel_config = self.deps.runtime_config.channel_config.load();
+            crate::conversation::ConversationSettings::from_agent_channel_config(&channel_config)
+        };
         ResolvedConversationSettings::resolve(
             db_settings.as_ref(),
             self.binding_settings.as_ref(),
-            None,
+            Some(&agent_channel_defaults),
         )
     }
 

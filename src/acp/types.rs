@@ -201,8 +201,9 @@ pub fn build_session_new_request(id: u64, cwd: &str) -> Value {
     })
 }
 
-/// Build a `session/prompt` request. ACP v1 accepts a plain string prompt;
-/// the system prompt is prepended by the worker before this call.
+/// Build a `session/prompt` request. Per the ACP spec the prompt is a
+/// `Content[]` array, not a plain string — some agents (e.g. oh-my-pi) drop
+/// string prompts silently, so always send the array form.
 pub fn build_session_prompt_request(id: u64, session_id: &str, prompt: &str) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -210,7 +211,7 @@ pub fn build_session_prompt_request(id: u64, session_id: &str, prompt: &str) -> 
         "method": "session/prompt",
         "params": {
             "sessionId": session_id,
-            "prompt": prompt,
+            "prompt": [{ "type": "text", "text": prompt }],
         }
     })
 }
@@ -376,7 +377,8 @@ mod tests {
         let request = build_session_prompt_request(3, "session-1", "do the thing");
         assert_eq!(request["method"], "session/prompt");
         assert_eq!(request["params"]["sessionId"], "session-1");
-        assert_eq!(request["params"]["prompt"], "do the thing");
+        assert_eq!(request["params"]["prompt"][0]["type"], "text");
+        assert_eq!(request["params"]["prompt"][0]["text"], "do the thing");
 
         let newsession = build_session_new_request(2, "/tmp/work");
         assert_eq!(newsession["method"], "session/new");

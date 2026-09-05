@@ -2785,7 +2785,7 @@ fn truncate_body(body: &str) -> &str {
     if body.len() <= limit {
         body
     } else {
-        &body[..limit]
+        &body[..body.floor_char_boundary(limit)]
     }
 }
 
@@ -3022,24 +3022,43 @@ fn parse_streamed_tool_arguments(
         return Ok(serde_json::json!({}));
     }
 
-    let direct_parse_error = match serde_json::from_str::<serde_json::Value>(raw_arguments) {
-        Ok(arguments) => return Ok(arguments),
-        Err(error) => error,
+    // Streaming deserializer isolates the FIRST valid JSON value; trailing
+    // hallucinated text after the tool-call block is tolerated (upstream #552).
+    // A plain `from_str` would fail the whole turn on such noise.
+    let direct_parse_error = match serde_json::Deserializer::from_str(raw_arguments)
+        .into_iter::<serde_json::Value>()
+        .next()
+    {
+        Some(Ok(arguments)) => return Ok(arguments),
+        Some(Err(error)) => error,
+        None => {
+            return Err(CompletionError::ProviderError(format!(
+                "invalid streamed tool arguments for '{tool_name}': no JSON value in stream"
+            )));
+        }
     };
 
     let sanitized_arguments = escape_control_characters_in_json_strings(raw_arguments);
     if sanitized_arguments != raw_arguments {
-        match serde_json::from_str::<serde_json::Value>(&sanitized_arguments) {
-            Ok(arguments) => {
+        match serde_json::Deserializer::from_str(&sanitized_arguments)
+            .into_iter::<serde_json::Value>()
+            .next()
+        {
+            Some(Ok(arguments)) => {
                 tracing::warn!(
                     tool_name,
                     "normalized control characters in streamed tool arguments"
                 );
                 return Ok(arguments);
             }
-            Err(sanitized_parse_error) => {
+            Some(Err(sanitized_parse_error)) => {
                 return Err(CompletionError::ProviderError(format!(
                     "invalid streamed tool arguments for '{tool_name}': {direct_parse_error}; after sanitization: {sanitized_parse_error}"
+                )));
+            }
+            None => {
+                return Err(CompletionError::ProviderError(format!(
+                    "invalid streamed tool arguments for '{tool_name}': {direct_parse_error}; after sanitization: no JSON value in stream"
                 )));
             }
         }
@@ -3820,6 +3839,23 @@ fn parse_anthropic_response(
                     content_blocks = content_blocks.len(),
                     "unexpected empty assistant_content from Anthropic"
                 );
+                // #503: an empty completion whose stop_reason is a context-limit
+                // marker is NOT a transient failure — retrying with the same
+                // bloated context wastes time and API credits. Surface it as a
+                // context-overflow error so the worker compacts and retries
+                // once, and the learned context ceiling is lowered. The message
+                // deliberately avoids retriable keywords ("empty response").
+                let stop_lower = stop_reason.to_lowercase();
+                if stop_lower.contains("context_window")
+                    || stop_lower.contains("context_length")
+                    || stop_lower.contains("context limit")
+                    || stop_lower.contains("max_tokens")
+                    || stop_lower.contains("prompt_too_long")
+                {
+                    return Err(CompletionError::ResponseError(format!(
+                        "completion rejected for exceeding the context limit (stop_reason: {stop_reason})"
+                    )));
+                }
                 return Err(CompletionError::ResponseError(format!(
                     "empty response from Anthropic (stop_reason: {stop_reason})"
                 )));

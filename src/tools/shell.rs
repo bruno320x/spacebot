@@ -418,11 +418,11 @@ async fn run_batch(
 
     let stdout = crate::tools::truncate_output(
         &String::from_utf8_lossy(&output.stdout),
-        crate::tools::MAX_TOOL_OUTPUT_BYTES,
+        crate::tools::tool_output_limit(),
     );
     let stderr = crate::tools::truncate_output(
         &String::from_utf8_lossy(&output.stderr),
-        crate::tools::MAX_TOOL_OUTPUT_BYTES,
+        crate::tools::tool_output_limit(),
     );
     let exit_code = output.status.code().unwrap_or(-1);
     let success = output.status.success();
@@ -572,8 +572,8 @@ async fn run_streaming(
 
     let success = !waiting_for_input && exit_code == 0;
 
-    let stdout = crate::tools::truncate_output(&stdout_lines, crate::tools::MAX_TOOL_OUTPUT_BYTES);
-    let stderr = crate::tools::truncate_output(&stderr_lines, crate::tools::MAX_TOOL_OUTPUT_BYTES);
+    let stdout = crate::tools::truncate_output(&stdout_lines, crate::tools::tool_output_limit());
+    let stderr = crate::tools::truncate_output(&stderr_lines, crate::tools::tool_output_limit());
 
     let summary = format_shell_output(exit_code, &stdout, &stderr, waiting_for_input);
 

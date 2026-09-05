@@ -487,6 +487,13 @@ impl MessagingManager {
     }
 
     /// Route a response back to the correct adapter based on message source.
+    ///
+    /// For a user reply this is often the *only* delivery of a worker or
+    /// branch result, so a transient platform failure must not silently drop
+    /// the message (upstream #581/#582 — "worker done, result never relayed").
+    /// Retry transient failures with the same bounded exponential backoff as
+    /// `broadcast_proactive`; permanent failures (chat gone, invalid payload)
+    /// fail immediately without retrying.
     pub async fn respond(
         &self,
         message: &InboundMessage,
@@ -500,7 +507,42 @@ impl MessagingManager {
                 .with_context(|| format!("no messaging adapter named '{}'", adapter_key))?,
         );
         drop(adapters);
-        adapter.respond(message, response).await
+
+        let mut delay = Self::BROADCAST_INITIAL_RETRY_DELAY;
+        for attempt in 1..=Self::MAX_BROADCAST_RETRY_ATTEMPTS {
+            match adapter.respond(message, response.clone()).await {
+                Ok(()) => {
+                    if attempt > 1 {
+                        tracing::info!(
+                            adapter = %adapter_key,
+                            attempt,
+                            "response delivered after retry"
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    let failure_kind = broadcast_failure_kind(&error);
+                    if failure_kind == BroadcastFailureKind::Transient
+                        && attempt < Self::MAX_BROADCAST_RETRY_ATTEMPTS
+                    {
+                        tracing::warn!(
+                            adapter = %adapter_key,
+                            attempt,
+                            max_attempts = Self::MAX_BROADCAST_RETRY_ATTEMPTS,
+                            retry_delay_ms = delay.as_millis(),
+                            %error,
+                            "response delivery failed with retryable error, retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Self::BROADCAST_MAX_RETRY_DELAY);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        unreachable!("respond retry loop must return on success or terminal error")
     }
 
     /// Route a status update to the correct adapter.

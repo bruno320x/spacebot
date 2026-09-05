@@ -189,6 +189,38 @@ async fn process_file(
     let chunks = chunk_text(&content, config.chunk_size);
     let total_chunks = chunks.len();
 
+    // Retry budget gate (#604 Fix 2): skip files that have been quarantined
+    // after repeated failures, or that are inside their exponential-backoff
+    // window. Without this, a permanently-failing chunk re-invoked the LLM on
+    // every poll cycle forever.
+    let now_ts = chrono::Utc::now().timestamp();
+    let state_row: Option<(String, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT status, attempts, next_attempt_at FROM ingestion_files WHERE content_hash = ?",
+    )
+    .bind(&hash)
+    .fetch_optional(&deps.sqlite_pool)
+    .await
+    .context("failed to read ingestion file retry state")?;
+    if let Some((status, _attempts, next_attempt_at)) = state_row {
+        if status == "quarantined" {
+            tracing::debug!(
+                file = %filename,
+                "ingestion file quarantined after repeated failures — skipping"
+            );
+            return Ok(());
+        }
+        if let Some(next) = next_attempt_at
+            && next > now_ts
+        {
+            tracing::debug!(
+                file = %filename,
+                next_attempt_at = next,
+                "ingestion file inside backoff window — skipping"
+            );
+            return Ok(());
+        }
+    }
+
     let completed = load_completed_chunks(&deps.sqlite_pool, &hash).await?;
     let remaining = total_chunks - completed.len();
 
@@ -263,39 +295,46 @@ async fn process_file(
         }
     }
 
-    // Mark file as completed (or failed if any chunk errored)
-    let final_status = if had_failure { "failed" } else { "completed" };
-    complete_ingestion_file(&deps.sqlite_pool, &hash, final_status).await?;
-
-    #[cfg(feature = "metrics")]
-    {
-        let result = if had_failure { "failure" } else { "success" };
-        crate::telemetry::Metrics::global()
-            .ingestion_files_processed_total
-            .with_label_values(&[&deps.agent_id, result])
-            .inc();
-    }
-
     if had_failure {
+        #[cfg(feature = "metrics")]
+        {
+            crate::telemetry::Metrics::global()
+                .ingestion_files_processed_total
+                .with_label_values(&[&deps.agent_id, "failure"])
+                .inc();
+        }
+        // Bounded retry with exponential backoff + quarantine (#604 Fix 2).
         // Keep the source file and progress rows so the next poll cycle can
         // resume from where it left off. Deleting on failure would cause data
         // loss when a provider error interrupts mid-ingestion (fixes #48).
+        fail_ingestion_file(&deps.sqlite_pool, &hash, config.max_attempts).await?;
         tracing::warn!(
             file = %filename,
             chunks = total_chunks,
-            "file ingestion had failures — keeping file and progress for retry"
+            max_attempts = config.max_attempts,
+            "file ingestion had failures — keeping file and progress for retry (bounded by max_attempts)"
         );
         return Ok(());
     }
 
     // Full success: clean up progress rows and remove the source file.
+    complete_ingestion_file(&deps.sqlite_pool, &hash, "completed").await?;
+
+    #[cfg(feature = "metrics")]
+    {
+        crate::telemetry::Metrics::global()
+            .ingestion_files_processed_total
+            .with_label_values(&[&deps.agent_id, "success"])
+            .inc();
+    }
+
     delete_progress(&deps.sqlite_pool, &hash).await?;
 
     tokio::fs::remove_file(path)
         .await
         .with_context(|| format!("failed to delete ingested file: {}", path.display()))?;
 
-    tracing::info!(file = %filename, chunks = total_chunks, status = final_status, "file ingestion complete, file deleted");
+    tracing::info!(file = %filename, chunks = total_chunks, status = "completed", "file ingestion complete, file deleted");
 
     Ok(())
 }
@@ -407,6 +446,54 @@ async fn upsert_ingestion_file(
     .await
     .context("failed to upsert ingestion file record")?;
 
+    Ok(())
+}
+
+/// Ingestion retry backoff: 60s, 2m, 4m, 8m ... capped at 1 hour.
+const INGESTION_BACKOFF_BASE_SECS: i64 = 60;
+const INGESTION_BACKOFF_MAX_SECS: i64 = 3600;
+
+fn ingestion_backoff_secs(attempt: i64) -> i64 {
+    let exponent = attempt.saturating_sub(1).min(20) as u32;
+    (INGESTION_BACKOFF_BASE_SECS.saturating_mul(1i64 << exponent)).min(INGESTION_BACKOFF_MAX_SECS)
+}
+
+/// Record a failed ingestion attempt with exponential backoff.
+///
+/// Increments `attempts`; while the budget remains the row is marked
+/// `failed` with a future `next_attempt_at`, and once `max_attempts` is
+/// reached it is marked `quarantined` so the poll loop stops retrying it.
+async fn fail_ingestion_file(
+    pool: &SqlitePool,
+    hash: &str,
+    max_attempts: u64,
+) -> anyhow::Result<()> {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT attempts FROM ingestion_files WHERE content_hash = ?")
+            .bind(hash)
+            .fetch_optional(pool)
+            .await
+            .context("failed to read ingestion attempts")?;
+    let attempts = row.map(|r| r.0).unwrap_or(0) + 1;
+    let max_attempts = max_attempts.max(1) as i64;
+    let (status, next_attempt_at) = if attempts >= max_attempts {
+        ("quarantined", None)
+    } else {
+        (
+            "failed",
+            Some(chrono::Utc::now().timestamp() + ingestion_backoff_secs(attempts)),
+        )
+    };
+    sqlx::query(
+        "UPDATE ingestion_files SET status = ?, attempts = ?, next_attempt_at = ?,          completed_at = CURRENT_TIMESTAMP WHERE content_hash = ?",
+    )
+    .bind(status)
+    .bind(attempts)
+    .bind(next_attempt_at)
+    .bind(hash)
+    .execute(pool)
+    .await
+    .context("failed to update ingestion file retry state")?;
     Ok(())
 }
 
@@ -547,7 +634,8 @@ async fn process_chunk(
         ProcessType::Branch,
         None,
         deps.event_tx.clone(),
-    );
+    )
+    .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
     let hook = hook.with_memory_persistence_contract(contract_state.clone());
 
     let user_prompt =

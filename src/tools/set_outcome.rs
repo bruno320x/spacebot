@@ -78,7 +78,7 @@ impl Tool for SetOutcomeTool {
         if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&content) {
             tracing::error!(
                 conversation_id = %self.conversation_id,
-                leak_prefix = %&leak[..leak.len().min(8)],
+                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                 "set_outcome blocked content matching secret pattern"
             );
             return Err(SetOutcomeError("blocked: potential secret detected".into()));

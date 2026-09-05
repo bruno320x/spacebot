@@ -5,6 +5,7 @@
 //! On macOS, uses sandbox-exec with a generated SBPL profile.
 //! Falls back to no sandboxing when neither backend is available.
 
+use crate::secrets::scrub::SecretScanMode;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,13 +24,18 @@ pub struct SandboxConfig {
     pub mode: SandboxMode,
     #[serde(default)]
     pub writable_paths: Vec<PathBuf>,
-    /// Environment variable names to forward from the parent process into worker
-    /// subprocesses. This is the escape hatch for self-hosted users who set env
-    /// vars in Docker/systemd but don't configure a secret store. When the secret
-    /// store is available, `passthrough_env` is redundant — everything should be
-    /// in the store. The field is additive either way.
     #[serde(default)]
     pub passthrough_env: Vec<String>,
+    /// Secret leak scan mode for this agent's output paths.
+    ///
+    /// `strict` (default): regex detection of unknown API-key patterns runs
+    /// everywhere — worker/branch egress is redacted and a channel tool-output
+    /// match terminates the process. `own_secrets_only`: the regex layer is
+    /// skipped (only exact stored secrets are scrubbed) — recommended when
+    /// agents scrape public pages that embed third-party keys. `disabled`:
+    /// scanning off entirely.
+    #[serde(default)]
+    pub secret_scanner: SecretScanMode,
     /// Project root paths auto-injected into the sandbox allowlist.
     /// Managed by `refresh_project_paths`, not user-configured.
     #[serde(skip)]
@@ -42,6 +48,7 @@ impl Default for SandboxConfig {
             mode: SandboxMode::Enabled,
             writable_paths: Vec::new(),
             passthrough_env: Vec::new(),
+            secret_scanner: SecretScanMode::Strict,
             project_paths: Vec::new(),
         }
     }

@@ -1680,6 +1680,10 @@ impl Config {
                 .defaults
                 .max_concurrent_workers
                 .unwrap_or(base_defaults.max_concurrent_workers),
+            max_tool_output_bytes: toml
+                .defaults
+                .max_tool_output_bytes
+                .unwrap_or(base_defaults.max_tool_output_bytes),
             max_turns: toml.defaults.max_turns.unwrap_or(base_defaults.max_turns),
             branch_max_turns: toml
                 .defaults
@@ -1739,6 +1743,7 @@ impl Config {
                         .poll_interval_secs
                         .unwrap_or(base_defaults.ingestion.poll_interval_secs),
                     chunk_size: ig.chunk_size.unwrap_or(base_defaults.ingestion.chunk_size),
+                    max_attempts: ig.max_attempts.unwrap_or(base_defaults.ingestion.max_attempts),
                 })
                 .unwrap_or(base_defaults.ingestion),
             cortex: toml
@@ -2032,6 +2037,7 @@ impl Config {
                             .poll_interval_secs
                             .unwrap_or(defaults.ingestion.poll_interval_secs),
                         chunk_size: ig.chunk_size.unwrap_or(defaults.ingestion.chunk_size),
+                        max_attempts: ig.max_attempts.unwrap_or(defaults.ingestion.max_attempts),
                     }),
                     cortex: a
                         .cortex

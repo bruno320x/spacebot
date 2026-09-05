@@ -1141,10 +1141,13 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
-        let split_at = remaining[..max_len]
+        // Walk back to a valid char boundary before searching/cutting so a
+        // multi-byte character never panics the slice (mirrors slack/discord).
+        let search_end = remaining.floor_char_boundary(max_len);
+        let split_at = remaining[..search_end]
             .rfind('\n')
-            .or_else(|| remaining[..max_len].rfind(' '))
-            .unwrap_or(max_len);
+            .or_else(|| remaining[..search_end].rfind(' '))
+            .unwrap_or(search_end);
 
         chunks.push(remaining[..split_at].to_string());
         remaining = remaining[split_at..].trim_start();

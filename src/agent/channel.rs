@@ -1059,6 +1059,10 @@ pub struct Channel {
     message_count: usize,
     /// When the last memory persistence branch was triggered.
     last_persistence_at: std::time::Instant,
+    /// When the run loop should wake to digest an idle conversation whose
+    /// messages never reached a persistence trigger (no inbound message
+    /// would otherwise re-evaluate them).
+    memory_persistence_due_at: Option<tokio::time::Instant>,
     /// Set when a turn or worker crossed the reflection work threshold.
     /// Consumed by the next persistence branch, which then also reflects
     /// on skills. The worker ids are handed to that branch so it can pull
@@ -1204,7 +1208,8 @@ impl Channel {
             ProcessType::Channel,
             Some(id.clone()),
             deps.event_tx.clone(),
-        );
+        )
+        .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
         let status_block = Arc::new(RwLock::new(StatusBlock::new()));
         let history = Arc::new(RwLock::new(Vec::new()));
         let active_branches = Arc::new(RwLock::new(HashMap::new()));
@@ -1319,6 +1324,7 @@ impl Channel {
             chronicler,
             message_count: 0,
             last_persistence_at: std::time::Instant::now(),
+            memory_persistence_due_at: None,
             memory_persistence_branches: HashSet::new(),
             reflection_signal: std::sync::Mutex::new(ReflectionSignal::default()),
             last_reflection_at: None,
@@ -1595,10 +1601,16 @@ impl Channel {
             }
         };
 
+        // `[agents.channel]` config (response_mode, save_attachments) stays
+        // applied across reloads as the agent default (upstream #550).
+        let agent_channel_defaults = {
+            let channel_config = self.deps.runtime_config.channel_config.load();
+            crate::conversation::ConversationSettings::from_agent_channel_config(&channel_config)
+        };
         let resolved = crate::conversation::settings::ResolvedConversationSettings::resolve(
             new_settings.as_ref(),
             None,
-            None,
+            Some(&agent_channel_defaults),
         );
 
         tracing::info!(
@@ -1968,6 +1980,19 @@ impl Channel {
                 (None, Some(b)) => Some(b),
                 (None, None) => None,
             };
+            // Fold in the idle memory-persistence wake: if the conversation
+            // went quiet with undigested messages, wake when the persistence
+            // time threshold elapses instead of waiting for an inbound message
+            // that may never come (short/ended sessions would otherwise be
+            // lost from the memory graph entirely).
+            self.compute_memory_persistence_wake();
+            let next_deadline = match next_deadline {
+                Some(a) => match self.memory_persistence_due_at {
+                    Some(b) => Some(a.min(b)),
+                    None => Some(a),
+                },
+                None => self.memory_persistence_due_at,
+            };
             let sleep_duration = next_deadline
                 .map(|deadline| {
                     let now = tokio::time::Instant::now();
@@ -2060,6 +2085,13 @@ impl Channel {
                     // Check retrigger deadline
                     if self.retrigger_deadline.is_some_and(|d| d <= now) {
                         self.flush_pending_retrigger().await;
+                    }
+                    // Idle memory-persistence deadline: the conversation is
+                    // quiet with undigested messages — run the digest now so
+                    // short/ended sessions still reach the memory graph.
+                    if self.memory_persistence_due_at.is_some_and(|d| d <= now) {
+                        self.memory_persistence_due_at = None;
+                        self.check_memory_persistence().await;
                     }
                 }
                 else => break,
@@ -3794,6 +3826,52 @@ impl Channel {
     }
 
     /// Send outbound text and record send metrics.
+    /// Best-effort duplicate guard for retrigger fallback relays.
+    ///
+    /// OpenCode and multi-worker jobs can surface the same completed result
+    /// through several retriggers in a row. The web UI already shows every
+    /// step, so re-sending a near-identical payload to a messaging adapter
+    /// only spams the user. Compares against the last few assistant messages
+    /// already on this channel: exact match, or a shared 100-char opening on
+    /// substantial texts, counts as a duplicate.
+    async fn is_duplicate_of_recent_assistant(&self, text: &str) -> bool {
+        let history = self.state.history.read().await;
+        let mut recent: Vec<String> = Vec::new();
+        for msg in history.iter().rev().take(10) {
+            if let rig::message::Message::Assistant { content, .. } = msg {
+                for part in content.iter() {
+                    if let rig::message::AssistantContent::Text(t) = part {
+                        recent.push(t.text.clone());
+                    }
+                }
+            }
+        }
+        drop(history);
+        if recent.is_empty() || text.trim().is_empty() {
+            return false;
+        }
+        let norm = |s: &str| -> String {
+            s.to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let target = norm(text);
+        recent.iter().any(|prev| {
+            let p = norm(prev);
+            p == target || {
+                let (pa, ta): (String, String) = (
+                    p.chars().take(100).collect(),
+                    target.chars().take(100).collect(),
+                );
+                !pa.is_empty()
+                    && pa == ta
+                    && p.chars().count() >= 80
+                    && target.chars().count() >= 80
+            }
+        })
+    }
+
     async fn send_outbound_text(&self, text: String, error_context: &str) {
         match self.send_routed(OutboundResponse::Text(text)).await {
             Ok(()) => {
@@ -3860,10 +3938,13 @@ impl Channel {
                                 channel_id = %self.id,
                                 "blocked retrigger fallback output containing structured or tool syntax"
                             );
-                        } else if let Some(leak) = crate::secrets::scrub::scan_for_leaks(text) {
+                        } else if self.deps.runtime_config.sandbox.load().secret_scanner
+                            == crate::secrets::scrub::SecretScanMode::Strict
+                            && let Some(leak) = crate::secrets::scrub::scan_for_leaks(text)
+                        {
                             tracing::warn!(
                                 channel_id = %self.id,
-                                leak_prefix = %&leak[..leak.len().min(8)],
+                                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                 "blocked retrigger fallback output matching secret pattern"
                             );
                         } else if suppress_plaintext_fallback {
@@ -3885,10 +3966,15 @@ impl Channel {
                                 .and_then(|conversation_id| conversation_id.split(':').next())
                                 .unwrap_or("unknown");
                             let final_text = crate::tools::reply::normalize_discord_mention_tokens(
-                                extracted.as_deref().unwrap_or(text),
+                                extracted
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(text),
                                 source,
                             );
-                            if !final_text.is_empty() {
+                            if !final_text.is_empty()
+                                && !self.is_duplicate_of_recent_assistant(&final_text).await
+                            {
                                 if extracted.is_some() {
                                     tracing::warn!(channel_id = %self.id, "extracted reply from malformed tool syntax in retrigger fallback");
                                 }
@@ -3900,6 +3986,11 @@ impl Channel {
                                     "failed to send retrigger fallback reply",
                                 )
                                 .await;
+                            } else if !final_text.is_empty() {
+                                tracing::info!(
+                                    channel_id = %self.id,
+                                    "suppressing duplicate retrigger fallback output; result already relayed"
+                                );
                             }
                         }
                     } else {
@@ -3928,10 +4019,13 @@ impl Channel {
                                 channel_id = %self.id,
                                 "blocked retrigger output containing structured or tool syntax"
                             );
-                        } else if let Some(leak) = crate::secrets::scrub::scan_for_leaks(text) {
+                        } else if self.deps.runtime_config.sandbox.load().secret_scanner
+                            == crate::secrets::scrub::SecretScanMode::Strict
+                            && let Some(leak) = crate::secrets::scrub::scan_for_leaks(text)
+                        {
                             tracing::warn!(
                                 channel_id = %self.id,
-                                leak_prefix = %&leak[..leak.len().min(8)],
+                                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                 "blocked retrigger output matching secret pattern"
                             );
                         } else if suppress_plaintext_fallback {
@@ -3953,10 +4047,18 @@ impl Channel {
                                 .and_then(|conversation_id| conversation_id.split(':').next())
                                 .unwrap_or("unknown");
                             let final_text = crate::tools::reply::normalize_discord_mention_tokens(
-                                extracted.as_deref().unwrap_or(text),
+                                extracted
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(text),
                                 source,
                             );
-                            if !final_text.is_empty() {
+                            if !final_text.is_empty()
+                                && !self.is_duplicate_of_recent_assistant(&final_text).await
+                            {
+                                if extracted.is_some() {
+                                    tracing::warn!(channel_id = %self.id, "extracted reply from malformed tool syntax in retrigger fallback");
+                                }
                                 self.state
                                     .conversation_logger
                                     .log_bot_message(&self.state.channel_id, &final_text);
@@ -3965,6 +4067,11 @@ impl Channel {
                                     "failed to send retrigger fallback reply",
                                 )
                                 .await;
+                            } else if !final_text.is_empty() {
+                                tracing::info!(
+                                    channel_id = %self.id,
+                                    "suppressing duplicate retrigger fallback output; result already relayed"
+                                );
                             }
                         }
                     } else {
@@ -3984,10 +4091,13 @@ impl Channel {
                             channel_id = %self.id,
                             "blocked fallback output containing structured or tool syntax"
                         );
-                    } else if let Some(leak) = crate::secrets::scrub::scan_for_leaks(text) {
+                    } else if self.deps.runtime_config.sandbox.load().secret_scanner
+                        == crate::secrets::scrub::SecretScanMode::Strict
+                        && let Some(leak) = crate::secrets::scrub::scan_for_leaks(text)
+                    {
                         tracing::warn!(
                             channel_id = %self.id,
-                            leak_prefix = %&leak[..leak.len().min(8)],
+                            leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                             "blocked fallback output matching secret pattern"
                         );
                     } else if suppress_plaintext_fallback {
@@ -4649,6 +4759,39 @@ impl Channel {
         match self.last_reflection_at {
             Some(at) => at.elapsed().as_secs() >= config.cooldown_secs,
             None => true,
+        }
+    }
+
+    /// Arm (or clear) the idle memory-persistence wake-up, folded into the
+    /// run-loop deadline by the caller.
+    ///
+    /// Mirrors `check_memory_persistence`'s enable conditions and time
+    /// trigger: when messages have arrived but no digest fired, and the
+    /// conversation then falls quiet, the run loop wakes once
+    /// `persistence_time_threshold_secs` elapses and runs the persistence
+    /// pass on its own — otherwise the session's content would sit
+    /// undigested until some future inbound message re-evaluates the
+    /// triggers (or forever, if the user never returns).
+    fn compute_memory_persistence_wake(&mut self) {
+        self.memory_persistence_due_at = None;
+        if self.state.kind.self_exits() {
+            // Cron/autonomy channels exit when their work finishes; their
+            // digest is driven by the message path and their own shutdown.
+            return;
+        }
+        let config = **self.deps.runtime_config.memory_persistence.load();
+        let persistence_enabled = config.enabled
+            && config.message_interval != 0
+            && self.resolved_settings.memory.persistence_enabled();
+        if !persistence_enabled || self.message_count == 0 {
+            return;
+        }
+        let wm_config = **self.deps.runtime_config.working_memory.load();
+        let elapsed = self.last_persistence_at.elapsed();
+        let threshold = std::time::Duration::from_secs(wm_config.persistence_time_threshold_secs);
+        if elapsed < threshold {
+            self.memory_persistence_due_at =
+                Some(tokio::time::Instant::now() + (threshold - elapsed));
         }
     }
 

@@ -428,6 +428,18 @@ pub(super) async fn cancel_process(
                 }
             }
 
+            // Agent-level fallback: cortex/autonomy workers still live in this
+            // process but have no owning channel (#653).
+            if state.cancel_detached_worker(&worker_id).await {
+                return Ok(Json(CancelProcessResponse {
+                    success: true,
+                    message: format!(
+                        "Worker {} cancelled (agent-level detached worker)",
+                        request.process_id
+                    ),
+                }));
+            }
+
             // Fallback for detached workers (for example after restart): no live
             // channel state exists, but the DB row is still marked running.
             let pools = state.agent_pools.load();

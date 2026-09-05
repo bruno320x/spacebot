@@ -358,6 +358,10 @@ async fn spawn_branch(
     dispatch_type: &'static str,
     branch_options: BranchSpawnOptions,
 ) -> std::result::Result<BranchId, AgentError> {
+    // Captured before tokio::spawn — `state` is borrowed and cannot be read
+    // inside the spawned future.
+    let secret_scan_mode = state.deps.runtime_config.sandbox.load().secret_scanner;
+
     if state
         .autonomy_run
         .as_ref()
@@ -517,7 +521,8 @@ async fn spawn_branch(
                 } else {
                     raw
                 };
-                let conclusion = crate::secrets::scrub::scrub_leaks(&conclusion);
+                let conclusion =
+                    crate::secrets::scrub::scrub_leaks_with_mode(&conclusion, secret_scan_mode);
                 let _ = event_tx.send(crate::ProcessEvent::BranchResult {
                     agent_id,
                     branch_id,
@@ -719,6 +724,7 @@ pub async fn spawn_worker_from_state(
     required_skills: &[&str],
     worker_context: &WorkerContextMode,
     origin_branch_id: Option<BranchId>,
+    task_type: Option<&str>,
 ) -> std::result::Result<WorkerId, AgentError> {
     if state
         .autonomy_run
@@ -737,6 +743,7 @@ pub async fn spawn_worker_from_state(
     let result = spawn_worker_inner(
         state,
         &task,
+        task_type,
         interactive,
         suggested_skills,
         required_skills,
@@ -757,6 +764,7 @@ pub async fn spawn_worker_from_state(
 async fn spawn_worker_inner(
     state: &ChannelState,
     task: &str,
+    task_type: Option<&str>,
     interactive: bool,
     suggested_skills: &[&str],
     required_skills: &[&str],
@@ -916,7 +924,17 @@ async fn spawn_worker_inner(
     let worker_model_override = state
         .model_overrides
         .resolve_model("worker")
-        .map(String::from);
+        .map(String::from)
+        .or_else(|| {
+            // #438: honor [defaults.routing.task_overrides] when the spawn
+            // names a task category. Only override when the task override
+            // actually differs from the routing default, so an unmatched
+            // task_type leaves the runtime default resolution untouched.
+            task_type.and_then(|task_type| {
+                let resolved = routing.resolve(ProcessType::Worker, Some(task_type));
+                (resolved != routing.worker).then(|| resolved.to_string())
+            })
+        });
 
     let worker = if interactive {
         let (worker, input_tx, inject_tx) = Worker::new_interactive(
@@ -1007,6 +1025,7 @@ async fn spawn_worker_inner(
         None,
         secrets_store,
         Some(state.deps.task_store.clone()),
+        state.deps.runtime_config.sandbox.load().secret_scanner,
         "builtin",
         worker.run().instrument(worker_span),
     );
@@ -1181,6 +1200,8 @@ async fn spawn_opencode_worker_inner(
             Some(store) => worker.with_secrets_store(store.clone()),
             None => worker,
         };
+        let worker =
+            worker.with_secret_scan_mode(state.deps.runtime_config.sandbox.load().secret_scanner);
         worker.with_sqlite_pool(state.deps.sqlite_pool.clone())
     } else {
         let worker = crate::opencode::OpenCodeWorker::new(
@@ -1199,6 +1220,8 @@ async fn spawn_opencode_worker_inner(
             Some(store) => worker.with_secrets_store(store.clone()),
             None => worker,
         };
+        let worker =
+            worker.with_secret_scan_mode(state.deps.runtime_config.sandbox.load().secret_scanner);
         worker.with_sqlite_pool(state.deps.sqlite_pool.clone())
     };
 
@@ -1242,6 +1265,7 @@ async fn spawn_opencode_worker_inner(
         Some(directory_claim),
         oc_secrets_store,
         Some(state.deps.task_store.clone()),
+        state.deps.runtime_config.sandbox.load().secret_scanner,
         "opencode",
         async move {
             let result = worker.run().await.map_err(SpacebotError::from);
@@ -1415,6 +1439,8 @@ async fn spawn_acp_worker_inner(
         Some(store) => worker.with_secrets_store(store.clone()),
         None => worker,
     };
+    let worker =
+        worker.with_secret_scan_mode(state.deps.runtime_config.sandbox.load().secret_scanner);
 
     state
         .process_run_logger
@@ -1453,6 +1479,7 @@ async fn spawn_acp_worker_inner(
         None,
         acp_secrets_store,
         Some(state.deps.task_store.clone()),
+        state.deps.runtime_config.sandbox.load().secret_scanner,
         "acp",
         async move {
             let result = worker.run().await.map_err(SpacebotError::from);
@@ -1527,6 +1554,11 @@ pub(crate) fn spawn_worker_task<F>(
     secrets_store: Option<Arc<crate::secrets::store::SecretsStore>>,
     // Present when the run should be recorded against a task's history.
     task_store: Option<Arc<crate::tasks::TaskStore>>,
+    // Agent's configured `[agents.sandbox] secret_scanner` mode, applied to
+    // the outcome text on egress. Producer processes apply the same mode to
+    // their own text; this final pass keeps the durable outcome record
+    // consistent with the delivered result.
+    secret_scan_mode: crate::secrets::scrub::SecretScanMode,
     #[cfg_attr(not(feature = "metrics"), allow(unused_variables))] worker_type: &'static str,
     future: F,
 ) -> WorkerTaskControl
@@ -1572,7 +1604,7 @@ where
             } else {
                 text
             };
-            crate::secrets::scrub::scrub_leaks(&layer1)
+            crate::secrets::scrub::scrub_leaks_with_mode(&layer1, secret_scan_mode)
         };
         let worker_result: std::result::Result<WorkerOutcome, WorkerCompletionError> = match raw {
             Ok(Ok(outcome)) => Ok(scrub_outcome(outcome, &scrub)),
@@ -1987,6 +2019,8 @@ pub async fn resume_idle_worker_into_state(
             if let Some(store) = &oc_secrets_store {
                 worker = worker.with_secrets_store(store.clone());
             }
+            worker = worker
+                .with_secret_scan_mode(state.deps.runtime_config.sandbox.load().secret_scanner);
             worker = worker.with_sqlite_pool(state.deps.sqlite_pool.clone());
 
             state
@@ -2014,6 +2048,7 @@ pub async fn resume_idle_worker_into_state(
                 Some(directory_claim),
                 oc_secrets_store,
                 Some(state.deps.task_store.clone()),
+                state.deps.runtime_config.sandbox.load().secret_scanner,
                 "opencode",
                 async move {
                     let result = worker.run().await.map_err(SpacebotError::from)?;
@@ -2152,6 +2187,7 @@ pub async fn resume_idle_worker_into_state(
                 None,
                 secrets_store,
                 Some(state.deps.task_store.clone()),
+                state.deps.runtime_config.sandbox.load().secret_scanner,
                 "builtin",
                 worker.run().instrument(worker_span),
             );
@@ -2410,6 +2446,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             async {
                 Err::<WorkerOutcome, crate::Error>(
@@ -2465,6 +2502,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             async move {
                 started_tx.send(()).expect("test receiver remains active");
@@ -2511,6 +2549,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             async {
                 Ok::<WorkerOutcome, crate::Error>(WorkerOutcome::Success {
@@ -2559,6 +2598,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             async {
                 Ok::<WorkerOutcome, crate::Error>(WorkerOutcome::Success {

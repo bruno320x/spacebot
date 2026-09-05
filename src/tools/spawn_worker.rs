@@ -339,6 +339,12 @@ pub struct SpawnWorkerArgs {
     /// exploration and context management.
     #[serde(default)]
     pub worker_type: Option<String>,
+    /// Optional routing category for this task, e.g. "coding". Keys a model
+    /// from `[defaults.routing.task_overrides]` when no conversation-level
+    /// model override is set. Workers spawned for coding CLIs (opencode/acp)
+    /// do not use Spacebot routing — they use their own model config.
+    #[serde(default)]
+    pub task_type: Option<String>,
     /// Working directory for the worker. Required for "opencode"/"acp"
     /// workers unless project_id or worktree_id is set. The coding agent will
     /// operate in this directory.
@@ -504,6 +510,15 @@ impl Tool for SpawnWorkerTool {
                 serde_json::json!({
                     "type": "string",
                     "description": "Worktree ID within the project. If set, the worker's directory is automatically set to the worktree path."
+                }),
+            );
+        }
+        if let Some(obj) = properties.as_object_mut() {
+            obj.insert(
+                "task_type".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Optional routing category for this task, e.g. \"coding\". When set and no conversation-level model override exists, the worker model is resolved from [defaults.routing.task_overrides] by this key."
                 }),
             );
         }
@@ -710,6 +725,7 @@ impl SpawnWorkerTool {
                 &required_skills,
                 &worker_context,
                 self.branch_delegation.as_ref().map(|state| state.branch_id),
+                args.task_type.as_deref(),
             )
             .await
             .map_err(|e| SpawnWorkerError(format!("{e}")))?
@@ -1151,7 +1167,7 @@ impl Tool for DetachedSpawnWorkerTool {
             worker_id = %worker_id,
             spawned_by = "cortex_chat",
         );
-        crate::agent::channel_dispatch::spawn_worker_task(
+        let worker_control = crate::agent::channel_dispatch::spawn_worker_task(
             worker_id,
             self.deps.event_tx.clone(),
             self.deps.agent_id.clone(),
@@ -1162,9 +1178,42 @@ impl Tool for DetachedSpawnWorkerTool {
             None,
             secrets_store,
             Some(self.deps.task_store.clone()),
+            self.deps.runtime_config.sandbox.load().secret_scanner,
             "builtin",
             worker.run().instrument(worker_span),
         );
+
+        // Register the control at agent level: this worker has no owning
+        // channel, so channel-scoped cancel (API/route) can never reach it.
+        // A watcher removes the entry when the task finishes.
+        let terminal_notify = worker_control.terminal_notify.clone();
+        self.deps
+            .detached_workers
+            .write()
+            .await
+            .insert(worker_id.clone(), worker_control);
+        {
+            let registry = self.deps.detached_workers.clone();
+            let cleanup_worker_id = worker_id.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = terminal_notify.notified() => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                    }
+                    let gone = registry.read().await.get(&cleanup_worker_id).is_none();
+                    let finished = registry
+                        .read()
+                        .await
+                        .get(&cleanup_worker_id)
+                        .is_some_and(|control| control.handle.is_finished());
+                    if gone || finished {
+                        registry.write().await.remove(&cleanup_worker_id);
+                        break;
+                    }
+                }
+            });
+        }
 
         // Register the worker with the cortex chat event loop so it can
         // auto-trigger a follow-up turn when the worker completes.

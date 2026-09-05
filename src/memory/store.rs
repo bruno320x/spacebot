@@ -111,6 +111,33 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Look up a live (non-forgotten) memory with identical content and type.
+    ///
+    /// Used for exact-duplicate suppression on re-saves: ingestion retries
+    /// after a partial chunk failure (or a branch re-saving the same fact)
+    /// must not create a second copy of an already-persisted memory.
+    pub async fn find_exact_duplicate(
+        &self,
+        content: &str,
+        memory_type: MemoryType,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id
+            FROM memories
+            WHERE content = ? AND memory_type = ? AND forgotten = 0
+            ORDER BY created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(content)
+        .bind(memory_type.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to look up duplicate memory")?;
+        Ok(row)
+    }
+
     /// Load a memory by ID.
     pub async fn load(&self, id: &str) -> Result<Option<Memory>> {
         let row = sqlx::query(

@@ -298,6 +298,9 @@ pub(super) struct TomlDefaultsConfig {
     pub(super) routing: Option<TomlRoutingConfig>,
     pub(super) max_concurrent_branches: Option<usize>,
     pub(super) max_concurrent_workers: Option<usize>,
+    /// Cap on tool output shown to the model (bytes). Defaults to
+    /// `MAX_TOOL_OUTPUT_BYTES` (50 KB).
+    pub(super) max_tool_output_bytes: Option<usize>,
     pub(super) max_turns: Option<usize>,
     pub(super) branch_max_turns: Option<usize>,
     pub(super) context_window: Option<usize>,
@@ -385,6 +388,7 @@ pub(super) struct TomlIngestionConfig {
     pub(super) enabled: Option<bool>,
     pub(super) poll_interval_secs: Option<u64>,
     pub(super) chunk_size: Option<usize>,
+    pub(super) max_attempts: Option<u64>,
 }
 
 #[derive(Deserialize)]

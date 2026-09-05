@@ -6,6 +6,7 @@
 
 use crate::opencode::server::OpenCodeServerPool;
 use crate::opencode::types::*;
+use crate::secrets::scrub::SecretScanMode;
 use crate::secrets::store::SecretsStore;
 use crate::{AgentId, ChannelId, ProcessEvent, WorkerId};
 
@@ -40,6 +41,10 @@ pub struct OpenCodeWorker {
     pub model: Option<String>,
     /// Secrets store for exact-match scrubbing of tool secret values in SSE output.
     pub secrets_store: Option<Arc<SecretsStore>>,
+    /// Secret scan mode for the regex leak-detection layer (Layer 2).
+    /// Mirrors the agent's `[agents.sandbox] secret_scanner` config; exact
+    /// stored-secret scrubbing always runs regardless of this mode.
+    pub secret_scan_mode: crate::secrets::scrub::SecretScanMode,
     /// SQLite pool for incremental transcript persistence (set by channel_dispatch).
     pub sqlite_pool: Option<sqlx::SqlitePool>,
     /// Pre-populated session state for resumed workers (set by `resume_interactive`).
@@ -115,6 +120,7 @@ impl OpenCodeWorker {
             system_prompt: None,
             model: None,
             secrets_store: None,
+            secret_scan_mode: SecretScanMode::Strict,
             sqlite_pool: None,
             resuming_session: None,
             transcript_snapshot: crate::agent::worker::new_worker_transcript_snapshot(),
@@ -152,6 +158,12 @@ impl OpenCodeWorker {
     /// Set the secrets store for exact-match scrubbing of tool secret values.
     pub fn with_secrets_store(mut self, store: Arc<SecretsStore>) -> Self {
         self.secrets_store = Some(store);
+        self
+    }
+
+    /// Set the secret leak scan mode for this worker's egress scrubbing.
+    pub fn with_secret_scan_mode(mut self, mode: SecretScanMode) -> Self {
+        self.secret_scan_mode = mode;
         self
     }
 
@@ -429,7 +441,10 @@ impl OpenCodeWorker {
             } else {
                 // Fresh worker: emit the initial result so the channel can retrigger.
                 let scrubbed_result = self.scrub_text(&result_text);
-                let scrubbed_result = crate::secrets::scrub::scrub_leaks(&scrubbed_result);
+                let scrubbed_result = crate::secrets::scrub::scrub_leaks_with_mode(
+                    &scrubbed_result,
+                    self.secret_scan_mode,
+                );
                 let _ = self.event_tx.send(ProcessEvent::WorkerInitialResult {
                     agent_id: self.agent_id.clone(),
                     worker_id: self.id,
@@ -488,7 +503,10 @@ impl OpenCodeWorker {
                         let follow_up_text = event_state.last_text.clone();
                         if !follow_up_text.is_empty() {
                             let scrubbed = self.scrub_text(&follow_up_text);
-                            let scrubbed = crate::secrets::scrub::scrub_leaks(&scrubbed);
+                            let scrubbed = crate::secrets::scrub::scrub_leaks_with_mode(
+                                &scrubbed,
+                                self.secret_scan_mode,
+                            );
                             let _ = self.event_tx.send(ProcessEvent::WorkerInitialResult {
                                 agent_id: self.agent_id.clone(),
                                 worker_id: self.id,
@@ -679,10 +697,13 @@ impl OpenCodeWorker {
 
                         // Exact-match scrubbing for leak detection
                         let scrubbed = self.scrub_text(text);
-                        if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&scrubbed) {
+                        if let Some(leak) = crate::secrets::scrub::scan_for_leaks_with_mode(
+                            &scrubbed,
+                            self.secret_scan_mode,
+                        ) {
                             tracing::warn!(
                                 worker_id = %self.id,
-                                leak_prefix = %&leak[..leak.len().min(8)],
+                                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                 "potential secret detected in OpenCode worker output"
                             );
                         }
@@ -714,12 +735,15 @@ impl OpenCodeWorker {
                                     if let Some(output) = output {
                                         let scrubbed = self.scrub_text(output);
                                         if let Some(leak) =
-                                            crate::secrets::scrub::scan_for_leaks(&scrubbed)
+                                            crate::secrets::scrub::scan_for_leaks_with_mode(
+                                                &scrubbed,
+                                                self.secret_scan_mode,
+                                            )
                                         {
                                             tracing::warn!(
                                                 worker_id = %self.id,
                                                 tool = %tool_name,
-                                                leak_prefix = %&leak[..leak.len().min(8)],
+                                                leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                                 "potential secret detected in OpenCode tool output"
                                             );
                                         }

@@ -113,7 +113,7 @@ impl Tool for McpToolAdapter {
             .map_err(|error| McpToolError(error.to_string()))?;
 
         let output_text = Self::collect_result_text(&result);
-        let output_text = truncate_output(&output_text, crate::tools::MAX_TOOL_OUTPUT_BYTES);
+        let output_text = truncate_output(&output_text, crate::tools::tool_output_limit());
 
         if result.is_error.unwrap_or(false) {
             let message = if output_text.is_empty() {

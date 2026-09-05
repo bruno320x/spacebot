@@ -105,6 +105,7 @@ impl RuntimeConfig {
         identity: crate::identity::Identity,
         skills: crate::skills::SkillSet,
     ) -> Self {
+        crate::tools::set_tool_output_limit(agent_config.max_tool_output_bytes);
         let opencode_config = &defaults.opencode;
         let server_pool = crate::opencode::OpenCodeServerPool::new(
             opencode_config.path.clone(),
