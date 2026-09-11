@@ -991,6 +991,12 @@ pub async fn remove_channel_tools(
     remove_optional_tool(handle, InstallSkillTool::NAME).await;
     remove_optional_tool(handle, RestartTool::NAME).await;
     remove_optional_tool(handle, ChronicleTool::NAME).await;
+    // Authority-gated per-turn tool. It was being added on every authority
+    // turn but never removed, so `static_tool_names` accumulated a duplicate
+    // entry per turn. Strict gateways (e.g. Experiential Labs) reject requests
+    // whose `tools` array repeats a name, which turned any authority channel
+    // (Telegram DM included) into a permanent 400 after its second turn.
+    remove_optional_tool(handle, SetHomeChannelTool::NAME).await;
     Ok(())
 }
 

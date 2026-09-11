@@ -248,6 +248,17 @@ impl AcpWorker {
         let session_id = create_session(&mut stdin, &mut reader, &self.directory).await?;
         tracing::info!(worker_id = %self.id, session_id = %session_id, "ACP session created");
 
+        // omp does not auto-generate a title in acp mode, so without this the
+        // session would show up untitled in `omp -r`. Patch the title line of
+        // the session file on disk with the task's first sentence (best-effort,
+        // never fails the worker) and surface the session id so the user can
+        // resume it from anywhere with `omp -r <id>`.
+        let short_id = session_id.chars().take(8).collect::<String>();
+        self.send_status(&format!(
+            "ACP session ready — resume with `omp -r {short_id}`"
+        ));
+        self.patch_omp_session_title(&session_id, &self.task).await;
+
         let prompt = self.build_prompt(&self.task);
         let result_text = self
             .run_turn(&mut stdin, &mut reader, &session_id, &prompt, true)
@@ -432,6 +443,60 @@ impl AcpWorker {
                 }
             }
         }
+    }
+
+    /// Best-effort: write a human-readable title into the first line of the
+    /// omp session file on disk (`~/.omp/agent/sessions/<cwd>/<ts>_<id>.jsonl`)
+    /// without changing the line's total byte length. omp pads the title line
+    /// and updates it in place, and title auto-generation does not run in acp
+    /// mode — so without this patch every ACP session appears untitled in the
+    /// `omp -r` picker. Any failure is logged and ignored; the worker never
+    /// fails because of this.
+    async fn patch_omp_session_title(&self, session_id: &str, task: &str) {
+        let Some(root) = omp_sessions_root() else {
+            tracing::debug!(worker_id = %self.id, "omp sessions root unavailable; skipping title patch");
+            return;
+        };
+        let title = title_from_task(task);
+        let Ok(mut dir) = tokio::fs::read_dir(&root).await else {
+            tracing::debug!(worker_id = %self.id, root = %root.display(), "omp sessions root missing; skipping title patch");
+            return;
+        };
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Ok(mut sub) = tokio::fs::read_dir(entry.path()).await else {
+                continue;
+            };
+            while let Ok(Some(file)) = sub.next_entry().await {
+                let path = file.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let name = file.file_name().to_string_lossy().into_owned();
+                if !name.contains(session_id) {
+                    continue;
+                }
+                if let Err(error) = patch_title_line(&path, &title).await {
+                    tracing::debug!(
+                        worker_id = %self.id,
+                        session_id,
+                        %error,
+                        "failed to patch omp session title"
+                    );
+                } else {
+                    tracing::info!(
+                        worker_id = %self.id,
+                        session_id,
+                        title = %title,
+                        "patched omp session title"
+                    );
+                }
+                return;
+            }
+        }
+        tracing::debug!(worker_id = %self.id, session_id, "omp session file not found; title left untouched");
     }
 
     /// Answer an incoming request from the agent. ACP agents use
@@ -624,6 +689,112 @@ async fn create_session(
             IncomingMessage::Notification { .. } => {}
         }
     }
+}
+
+/// Resolve the omp session storage root (`~/.omp/agent/sessions`), honoring
+/// the `PI_CODING_AGENT_SESSION_DIR` override omp itself supports.
+fn omp_sessions_root() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    let home = dirs::home_dir()?;
+    Some(home.join(".omp/agent/sessions"))
+}
+
+/// Derive a short, recognizable title from the task text: the first non-empty
+/// line, stripped of leading markdown heading markers, capped at 80 chars.
+fn title_from_task(task: &str) -> String {
+    let first = task
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("ACP task");
+    let stripped = first.trim_start_matches('#').trim();
+    let mut title = stripped.chars().take(80).collect::<String>();
+    if stripped.chars().count() > 80 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        title = "ACP task".to_string();
+    }
+    title
+}
+
+/// Rewrite the first (title) line of an omp session file in place, keeping
+/// the line's total byte length identical so omp's in-place title updates
+/// keep working. The `pad` field absorbs the length difference.
+async fn patch_title_line(path: &Path, title: &str) -> anyhow::Result<()> {
+    use std::io::SeekFrom;
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, AsyncWriteExt as _};
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .await
+        .with_context(|| format!("open session file '{}'", path.display()))?;
+
+    // Read just the first line (omp stores the title object there). The line
+    // is short and fixed-padded, so a bounded read is enough.
+    let mut head = vec![0u8; 4096];
+    let n = file.read(&mut head).await?;
+    if n == 0 {
+        return Ok(());
+    }
+    let newline = head[..n].iter().position(|b| *b == b'\n');
+    let line_bytes = match newline {
+        Some(pos) => &head[..pos],
+        None => &head[..n],
+    };
+    let trimmed = std::str::from_utf8(line_bytes)?.trim_end();
+    let orig_len = trimmed.len();
+    let value: serde_json::Value = serde_json::from_str(trimmed)?;
+
+    // omp pads the title line to a fixed length and rewrites it in place, so
+    // the patched line must keep its exact original byte length. The `pad`
+    // field absorbs the difference. Build the line manually in omp's key
+    // order (type, v, title, updatedAt, pad) so only the title text and pad
+    // length change — serde's BTreeMap would reorder keys and shift the line.
+    let updated_at = value
+        .get("updatedAt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Title must fit in the space the original pad provided (plus whatever
+    // room the original empty title leaves). Trim until it does.
+    let suffix = "\"}";
+    let mut fitted_title = title.to_string();
+    let mut new_line = loop {
+        let prefix = format!(
+            "{{\"type\":\"title\",\"v\":1,\"title\":{},\"updatedAt\":{},\"pad\":\"",
+            serde_json::to_string(&fitted_title)?,
+            serde_json::to_string(updated_at)?,
+        );
+        let fixed_len = prefix.len() + suffix.len();
+        let pad_len = orig_len.saturating_sub(fixed_len);
+        let candidate = format!("{prefix}{}{suffix}", " ".repeat(pad_len));
+        if candidate.len() <= orig_len || fitted_title.chars().count() <= 1 {
+            break candidate;
+        }
+        fitted_title.pop();
+    };
+
+    if new_line.len() != orig_len {
+        tracing::debug!(
+            path = %path.display(),
+            orig_len,
+            new_len = new_line.len(),
+            "omp title line length mismatch; keeping original length"
+        );
+    }
+    new_line.push('\n');
+
+    file.seek(SeekFrom::Start(0)).await?;
+    file.write_all(new_line.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 /// Send `session/exit`. The agent may close stdout immediately after; treat
