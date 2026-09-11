@@ -841,3 +841,27 @@ güvenli.
 kalem eklenmedi (önceki 18 + ölü sabit temizliği ile birlikte derlenecek). Canlı doğrulama: Telegram'dan
 emoji/Türkçe yoğun uzun mesaj gönder → split_message artık panic etmeden bölmeli; secret pattern'li
 Türkçe içerik log'lanınca leak_prefix kırpılmalı.
+
+## AKŞAM BUILD LİSTESİ — 19) #yeni: 400 "request could not be completed" retriable + hata etiketi (2026-09-07)
+- CheaperInference gateway'inin generic 400'ü ("This request could not be completed...") aslında upstream kesintisi — `is_retriable_error`'a ekle (fallback zinciri çalışsın: claude→deepseek→glm).
+- `src/llm/model.rs` hata formatı `provider.name` kullanıyor (statik etiket) → hataya **gerçek model id**'yi ekle (`model={model}` alanı), yoksa hangi modelin patladığı anlaşılamıyor.
+- Kanıt: 10:57-11:04 arası 4x 400 (autonomy/portal/telegram), 11:11'de kendiliğinden düzeldi; her iki model de 60K+ payload'ı 200 ile karşılıyor.
+
+### ⚠️ DÜZELTME (11 Eyl 2026) — bu kalemin teşhisi EKSİKTİ
+
+`is_retriable_error`'a kalıbı eklemek **tek başına hiçbir şeyi düzeltmezdi**.
+Sebep: `src/llm/model.rs::stream()` içinde şu yorum vardı —
+*"Streaming has no fallback chain"* — ve **kanal ile worker'lar streaming
+kullanıyor** (`prompt_once_streaming`). Yani sahadaki hataların tamamı
+(`channel LLM call failed … OpenAI-compatible streaming error`) streaming
+yolundan geliyordu ve o yolda ne retry ne fallback **vardı**.
+
+Gerçek düzeltme iki parçalı (11 Eyl'de yazıldı):
+1. `stream()` artık `stream_with_fallbacks()` çağırıyor — streaming de
+   `attempt_with_retries` ile aynı backoff + fallback zincirini kullanıyor.
+2. `is_retriable_error`'a gateway kalıpları eklendi (`could not be completed`,
+   `quote the request id`, `request queue is full`) + retriable olmayan hatalarda
+   log'a `model=<id>` alanı eklendi.
+
+Ders: hata sınıflandırmasını düzeltmeden önce **hangi yolun o hatayı gördüğünü**
+doğrula — yoksa doğru düzeltmeyi yanlış yere yaparsın.
