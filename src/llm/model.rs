@@ -27,7 +27,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-const STREAM_REQUEST_TIMEOUT_SECS: u64 = 30 * 60;
+/// Total budget for one request, from send to the last byte of the stream.
+///
+/// This was 30 minutes, which is the same as the worker wall-clock budget
+/// (`DEFAULT_WORKER_WALL_CLOCK_TIMEOUT_SECS`, also 1800s). A single stalled
+/// gateway request could therefore consume a worker's entire life without
+/// yielding anything: on 2026-09-10 two workers died at exactly 1800s and one
+/// of them had made **zero** tool calls. Two equal budgets are one budget.
+///
+/// It is not lower than this because the window covers the *whole* generation,
+/// not just the first byte: a reasoning model emitting a few thousand tokens
+/// can legitimately stream for minutes, and cutting that short would trade a
+/// hang for silent truncation. A stall now costs at most five minutes, and the
+/// streaming path retries and falls back (see `stream_attempt_with_retries`),
+/// so the turn continues on another model instead of dying.
+const STREAM_REQUEST_TIMEOUT_SECS: u64 = 5 * 60;
 
 /// Raw provider response. Wraps the JSON so Rig can carry it through.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -768,7 +782,16 @@ impl SpacebotModel {
                 Err(error) => {
                     let error_str = error.to_string();
                     if !routing::is_retriable_error(&error_str) {
-                        // Non-retriable (auth error, bad request, etc) — bail immediately
+                        // Non-retriable (auth error, bad request, etc) — bail
+                        // immediately. The model id goes in the log because
+                        // these used to reach the log as a bare provider
+                        // message, with no way to tell which link of the chain
+                        // had failed.
+                        tracing::warn!(
+                            model = %model_name,
+                            %error,
+                            "model call failed (non-retriable)"
+                        );
                         return Err((error, false));
                     }
                     tracing::warn!(
@@ -800,6 +823,11 @@ impl SpacebotModel {
         &self,
         request: &CompletionRequest,
     ) -> Result<completion::CompletionResponse<RawResponse>, CompletionError> {
+        // Hold a slot for the whole logical request, fallbacks included: the
+        // semaphore protects the provider, and a retry chain should not count
+        // as several concurrent callers.
+        let _slot = self.llm_manager.acquire_llm_slot().await;
+
         let Some(routing) = &self.routing else {
             // No routing config — just call the model directly, no fallback/retry
             return self.attempt_completion(request.clone()).await;
@@ -1148,8 +1176,10 @@ impl CompletionModel for SpacebotModel {
         mut request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
         self.repair_request_history(&mut request)?;
-        // Streaming has no fallback chain, so this model is the one that
-        // receives the request and the one a refusal belongs to.
+        // The ceiling is enforced for *this* model, which is the one that gets
+        // the first attempt and the one a refusal belongs to. A fallback may
+        // carry its own, larger window — the same trade the non-streaming path
+        // makes, where only the primary is measured against a ceiling.
         let sent_tokens = self.enforce_context_ceiling(&mut request);
 
         let capture_started = self
@@ -1157,7 +1187,7 @@ impl CompletionModel for SpacebotModel {
             .is_some()
             .then(|| (chrono::Utc::now(), std::time::Instant::now()));
 
-        let mut result = self.dispatch_stream(request.clone()).await;
+        let mut result = self.stream_with_fallbacks(&request).await;
 
         // The channel agent streams, so it needs the same escalation as the
         // non-streaming path. A provider rejects an assistant call nothing
@@ -1167,7 +1197,7 @@ impl CompletionModel for SpacebotModel {
             && routing::is_tool_history_mismatch_error(&error.to_string())
             && self.escalate_tool_history_repair(&mut request)
         {
-            result = self.dispatch_stream(request.clone()).await;
+            result = self.stream_with_fallbacks(&request).await;
             self.record_tool_history_recovery(result.is_ok());
         }
 
@@ -1203,6 +1233,186 @@ impl CompletionModel for SpacebotModel {
 }
 
 impl SpacebotModel {
+    /// Open a stream with the same retry and fallback policy the non-streaming
+    /// path gets from `dispatch_completion`.
+    ///
+    /// Streaming used to have neither. `stream()` called `dispatch_stream`
+    /// exactly once, so the first retriable failure ended the turn no matter
+    /// how many fallbacks the routing config declared — the chain only ever
+    /// applied to non-streaming calls, and the channel and its workers stream
+    /// (`prompt_once_streaming`). That is why a gateway hiccup
+    /// ("This request could not be completed.") took a worker down mid-task on
+    /// 2026-09-10 while a perfectly good fallback model sat unused in the
+    /// config.
+    ///
+    /// Retrying is safe here because every streaming implementation collects
+    /// the response before returning (`collect_streaming_completion_response`),
+    /// so a failure means nothing was handed to the caller yet. A stream that
+    /// opens successfully returns immediately and is *not* retried; errors
+    /// during consumption surface at the consumer, not here.
+    async fn stream_with_fallbacks(
+        &self,
+        request: &CompletionRequest,
+    ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, CompletionError> {
+        // Hold a slot for the whole logical request, retries and fallbacks
+        // included: the semaphore protects the provider, and one worker's
+        // retry storm should not look like several concurrent callers.
+        let _slot = self.llm_manager.acquire_llm_slot().await;
+
+        let Some(routing) = &self.routing else {
+            // No routing config — this model only, no retries.
+            return self.dispatch_stream(request.clone()).await;
+        };
+
+        let cooldown = routing.rate_limit_cooldown_secs;
+        let fallbacks: Vec<String> = routing.get_fallbacks(&self.full_model_name).to_vec();
+        let mut last_error: Option<CompletionError> = None;
+
+        let primary_rate_limited = self
+            .llm_manager
+            .is_rate_limited(&self.full_model_name, cooldown)
+            .await;
+
+        if primary_rate_limited && !fallbacks.is_empty() {
+            tracing::debug!(
+                model = %self.full_model_name,
+                "primary model in rate-limit cooldown, skipping to streaming fallbacks"
+            );
+        } else {
+            match self
+                .stream_attempt_with_retries(&self.full_model_name, request)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err((error, was_rate_limit)) => {
+                    if was_rate_limit {
+                        self.llm_manager
+                            .record_rate_limit(&self.full_model_name)
+                            .await;
+                    }
+                    if fallbacks.is_empty() {
+                        // No fallbacks — this is the final error.
+                        return Err(error);
+                    }
+                    tracing::warn!(
+                        model = %self.full_model_name,
+                        %error,
+                        "primary model exhausted streaming retries, trying fallbacks"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        for (index, fallback_name) in fallbacks.iter().take(MAX_FALLBACK_ATTEMPTS).enumerate() {
+            if self
+                .llm_manager
+                .is_rate_limited(fallback_name, cooldown)
+                .await
+            {
+                tracing::debug!(
+                    fallback = %fallback_name,
+                    "fallback model in cooldown, skipping"
+                );
+                continue;
+            }
+
+            match self
+                .stream_attempt_with_retries(fallback_name, request)
+                .await
+            {
+                Ok(response) => {
+                    tracing::info!(
+                        original = %self.full_model_name,
+                        fallback = %fallback_name,
+                        attempt = index + 1,
+                        "streaming fallback model succeeded"
+                    );
+                    return Ok(response);
+                }
+                Err((error, was_rate_limit)) => {
+                    if was_rate_limit {
+                        self.llm_manager.record_rate_limit(fallback_name).await;
+                    }
+                    tracing::warn!(
+                        fallback = %fallback_name,
+                        %error,
+                        "fallback model exhausted streaming retries, continuing chain"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            CompletionError::ProviderError(
+                "no model in the streaming fallback chain produced a response".to_string(),
+            )
+        }))
+    }
+
+    /// One model, retried with the same backoff the non-streaming path uses.
+    async fn stream_attempt_with_retries(
+        &self,
+        model_name: &str,
+        request: &CompletionRequest,
+    ) -> Result<StreamingCompletionResponse<RawStreamingResponse>, (CompletionError, bool)> {
+        let model = if model_name == self.full_model_name {
+            self.clone()
+        } else {
+            SpacebotModel::make(&self.llm_manager, model_name)
+        };
+
+        let mut last_error = None;
+        for attempt in 0..MAX_RETRIES_PER_MODEL {
+            if attempt > 0 {
+                let delay_ms = RETRY_BASE_DELAY_MS * 2u64.pow((attempt - 1) as u32);
+                tracing::debug!(
+                    model = %model_name,
+                    attempt = attempt + 1,
+                    delay_ms,
+                    "retrying stream after backoff"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+
+            match model.dispatch_stream(request.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let error_str = error.to_string();
+                    if !routing::is_retriable_error(&error_str) {
+                        // Non-retriable (auth error, bad request, ...). The model
+                        // id goes in the log because these used to reach the log
+                        // as a bare provider message with no way to tell which
+                        // link of the chain had failed.
+                        tracing::warn!(
+                            model = %model_name,
+                            %error,
+                            "model stream failed (non-retriable)"
+                        );
+                        return Err((error, false));
+                    }
+                    tracing::warn!(
+                        model = %model_name,
+                        attempt = attempt + 1,
+                        %error,
+                        "retriable streaming error"
+                    );
+                    last_error = Some(error_str);
+                }
+            }
+        }
+
+        let error_str = last_error.unwrap_or_default();
+        let was_rate_limit = routing::is_rate_limit_error(&error_str);
+        Err((
+            CompletionError::ProviderError(format!(
+                "{model_name} stream failed after {MAX_RETRIES_PER_MODEL} attempts: {error_str}"
+            )),
+            was_rate_limit,
+        ))
+    }
+
     /// Open a stream against whichever provider the current model belongs to.
     async fn dispatch_stream(
         &self,
@@ -3014,6 +3224,91 @@ fn escape_control_characters_in_json_strings(input: &str) -> String {
     escaped
 }
 
+/// Model control tokens that must never reach a tool argument.
+///
+/// DeepSeek-family models behind OpenAI-compatible gateways periodically leak
+/// their native tool-call framing into the argument text. On 2026-09-10 a
+/// worker sent a shell command whose tail was
+/// `… | head -30</｜DSML｜ue> I accidentally mangled that last shell command …`,
+/// followed by a raw `<｜DSML｜tool_calls>` block; the shell answered
+/// `syntax error near unexpected token` and the turn was wasted. Everything
+/// from the first marker onward is model narration, never part of the
+/// argument, so dropping it recovers the call the model meant to make.
+const MODEL_CONTROL_TOKENS: &[&str] = &[
+    "<｜",
+    // A *mangled* closing tag: the model emitted `</｜DSML｜ue>` instead of a
+    // valid `</｜DSML｜tool_calls>`. `"<｜"` cannot match it because the opener
+    // is followed by `/`, not by the fullwidth bar, so without this the whole
+    // narration survives and the shell gets a syntax error.
+    "</｜",
+    // The gateway's own framing marker, in whatever tag it is wrapped in.
+    "｜DSML｜",
+    "</think>",
+    "<think>",
+    "</response>",
+    "<response>",
+    "</tool_calls>",
+    "<tool_calls>",
+    "</reasoning>",
+    "<reasoning>",
+];
+
+/// Drop the first model control token and everything after it.
+///
+/// Returns `None` when the text carries no marker, so a caller can tell
+/// "unchanged" apart from "cleaned down to empty".
+fn strip_model_control_tokens(text: &str) -> Option<&str> {
+    let index = MODEL_CONTROL_TOKENS
+        .iter()
+        .filter_map(|token| text.find(token))
+        .min()?;
+    // `find` reports a byte offset at a char boundary, so the slice is safe
+    // even though `<｜` mixes ASCII with a fullwidth character.
+    Some(&text[..index])
+}
+
+/// Clean every string inside a parsed tool-argument tree, in place.
+///
+/// Returns `true` when anything changed so the caller can log it: a silent
+/// repair would hide how often the upstream model emits broken tool calls, and
+/// that number is the only evidence for whether the gateway is worth keeping.
+fn sanitize_tool_arguments(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let Some(stripped) = strip_model_control_tokens(text) else {
+                return false;
+            };
+            let cleaned = stripped.trim_end();
+            if cleaned == text.as_str() {
+                return false;
+            }
+            *text = cleaned.to_string();
+            true
+        }
+        serde_json::Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
+            sanitize_tool_arguments(item) || changed
+        }),
+        serde_json::Value::Object(fields) => fields.values_mut().fold(false, |changed, field| {
+            sanitize_tool_arguments(field) || changed
+        }),
+        _ => false,
+    }
+}
+
+/// Sanitize a freshly parsed argument tree and report the repair.
+fn clean_parsed_tool_arguments(
+    tool_name: &str,
+    mut arguments: serde_json::Value,
+) -> serde_json::Value {
+    if sanitize_tool_arguments(&mut arguments) {
+        tracing::warn!(
+            tool_name,
+            "stripped leaked model control tokens from streamed tool arguments"
+        );
+    }
+    arguments
+}
+
 fn parse_streamed_tool_arguments(
     tool_name: &str,
     raw_arguments: &str,
@@ -3029,7 +3324,7 @@ fn parse_streamed_tool_arguments(
         .into_iter::<serde_json::Value>()
         .next()
     {
-        Some(Ok(arguments)) => return Ok(arguments),
+        Some(Ok(arguments)) => return Ok(clean_parsed_tool_arguments(tool_name, arguments)),
         Some(Err(error)) => error,
         None => {
             return Err(CompletionError::ProviderError(format!(
@@ -3049,7 +3344,7 @@ fn parse_streamed_tool_arguments(
                     tool_name,
                     "normalized control characters in streamed tool arguments"
                 );
-                return Ok(arguments);
+                return Ok(clean_parsed_tool_arguments(tool_name, arguments));
             }
             Some(Err(sanitized_parse_error)) => {
                 return Err(CompletionError::ProviderError(format!(
@@ -5197,6 +5492,67 @@ mod tests {
         assert!(message.contains("The model is overloaded"), "{message}");
         assert!(!message.contains("missing response.completed"), "{message}");
         assert!(crate::llm::routing::is_retriable_error(&message));
+    }
+
+    /// The exact shape a DeepSeek-family model leaked into a worker's shell
+    /// command on 2026-09-10 (see `worker_a04bd497…log`): the real command, then
+    /// a narration tail after a native-token fragment.
+    #[test]
+    fn strips_leaked_model_control_tokens_from_tool_arguments() {
+        let mut arguments = serde_json::json!({
+            "command": "grep -rn \"busy_timeout\" /repo/src 2>/dev/null | head -30</｜DSML｜ue> I accidentally mangled that last shell command. Let me redo it properly.</think>\n\n<｜DSML｜tool_calls>"
+        });
+
+        assert!(sanitize_tool_arguments(&mut arguments));
+        assert_eq!(
+            arguments["command"].as_str(),
+            Some("grep -rn \"busy_timeout\" /repo/src 2>/dev/null | head -30")
+        );
+    }
+
+    /// Cleaning walks nested objects and arrays, not just the top level: a
+    /// marker can land in any string the model filled in.
+    #[test]
+    fn strips_leaked_tokens_anywhere_in_the_argument_tree() {
+        let mut arguments = serde_json::json!({
+            "edits": [{ "path": "a.rs<think>", "content": "fn main() {}</reasoning>" }],
+            "command": "ls",
+        });
+
+        assert!(sanitize_tool_arguments(&mut arguments));
+        assert_eq!(arguments["edits"][0]["path"].as_str(), Some("a.rs"));
+        assert_eq!(
+            arguments["edits"][0]["content"].as_str(),
+            Some("fn main() {}")
+        );
+        assert_eq!(arguments["command"].as_str(), Some("ls"));
+    }
+
+    /// A marker that leads the value collapses it to empty: everything after it
+    /// is narration, and an empty argument produces a clear "missing argument"
+    /// error instead of a shell syntax error from the narrative tail.
+    #[test]
+    fn a_leading_marker_collapses_the_argument() {
+        let mut arguments = serde_json::json!({ "command": "</think>ls -la" });
+
+        assert!(sanitize_tool_arguments(&mut arguments));
+        assert_eq!(arguments["command"].as_str(), Some(""));
+    }
+
+    /// Ordinary content must survive untouched — including `<` and `>`, which
+    /// are everywhere in shell commands and code.
+    #[test]
+    fn leaves_ordinary_arguments_untouched() {
+        let original = serde_json::json!({
+            "command": "cargo test --lib -- --nocapture",
+            "nested": { "path": "src/x.rs", "list": ["a < b", "c > d", "<div>"] },
+            "count": 3,
+            "flag": true,
+        });
+        let mut arguments = original.clone();
+
+        assert!(!sanitize_tool_arguments(&mut arguments));
+        assert_eq!(arguments, original);
     }
 
     #[test]

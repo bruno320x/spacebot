@@ -147,6 +147,18 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         // Provider-side internal panics relayed in-band (e.g. a gateway's own
         // RefCell crash under concurrent load — #469). Transient by nature.
         || lower.contains("already borrowed")
+        // Gateway-side transient failures that arrive as a *successful* HTTP
+        // response carrying an error body, so no status check can see them.
+        //
+        // CheapInference answers an upstream outage with "This request could
+        // not be completed. If it keeps happening, contact support and quote
+        // the request id." On 2026-09-10 that killed a worker ten tool calls
+        // into its task instead of failing over to the next model.
+        || lower.contains("could not be completed")
+        || lower.contains("quote the request id")
+        // Same shape, different wording: the provider's own admission that it
+        // is shedding load. Waiting is the correct response, not failing.
+        || lower.contains("request queue is full")
 }
 
 /// Whether a completion error indicates the provider rejected the model id
@@ -624,6 +636,19 @@ mod tests {
         // Provider gateway internal panic relayed via SSE error event (#469)
         assert!(is_retriable_error(
             "OpenAI-compatible streaming error: Already borrowed"
+        ));
+    }
+
+    #[test]
+    fn is_retriable_error_catches_gateway_errors_delivered_in_the_body() {
+        // These arrive as HTTP 200 (or a generic 400) with the failure in the
+        // body, so `is_retriable_status` never sees them. Real strings from the
+        // 2026-09-10 worker failure log.
+        assert!(is_retriable_error(
+            "OpenAI-compatible streaming error: This request could not be completed. If it keeps happening, contact support and quote the request id."
+        ));
+        assert!(is_retriable_error(
+            "The request queue is full. Please try again later."
         ));
     }
 

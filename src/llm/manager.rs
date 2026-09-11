@@ -28,7 +28,29 @@ const COPILOT_EDITOR_VERSION: &str = "vscode/1.96.2";
 const COPILOT_EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
+
+/// How many LLM requests may be in flight process-wide.
+///
+/// The resource being protected is the *upstream provider*, not one agent: the
+/// channel, its workers, branches, cortex and cron all share the same API key.
+/// Before this limit existed, `max_concurrent_workers` (5) plus
+/// `max_concurrent_branches` (5) plus a 30-second cortex tick produced enough
+/// burst that the provider began answering "The request queue is full.", and
+/// queueing upstream is pure added latency (2026-09-07 logs).
+///
+/// Four is deliberately conservative: it keeps a coding worker's tool loop
+/// moving while leaving room for the channel. Raise it with
+/// `SPACEBOT_LLM_CONCURRENCY` if a provider turns out to tolerate more.
+const DEFAULT_LLM_CONCURRENCY: usize = 4;
+
+fn llm_concurrency_limit() -> usize {
+    std::env::var("SPACEBOT_LLM_CONCURRENCY")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|limit| *limit > 0)
+        .unwrap_or(DEFAULT_LLM_CONCURRENCY)
+}
 
 /// Manages LLM provider clients and tracks rate limit state.
 pub struct LlmManager {
@@ -36,6 +58,9 @@ pub struct LlmManager {
     http_client: reqwest::Client,
     /// Models currently in rate limit cooldown, with the time they were limited.
     rate_limited: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Caps how many requests are in flight across the whole process. See
+    /// `acquire_llm_slot`.
+    llm_slots: Arc<Semaphore>,
     /// Instance directory for reading/writing OAuth credentials.
     instance_dir: Option<PathBuf>,
     /// Cached Anthropic OAuth credentials (refreshed lazily).
@@ -124,6 +149,7 @@ impl LlmManager {
             openai_oauth_credentials: RwLock::new(None),
             copilot_token: RwLock::new(None),
             context_ceilings: ArcSwap::from_pointee(ContextCeilings::default()),
+            llm_slots: Arc::new(Semaphore::new(llm_concurrency_limit())),
         })
     }
 
@@ -205,6 +231,7 @@ impl LlmManager {
             openai_oauth_credentials: RwLock::new(openai_oauth_credentials),
             copilot_token: RwLock::new(copilot_token),
             context_ceilings: ArcSwap::from_pointee(ContextCeilings::default()),
+            llm_slots: Arc::new(Semaphore::new(llm_concurrency_limit())),
         })
     }
 
@@ -596,6 +623,29 @@ impl LlmManager {
             .write()
             .await
             .retain(|_, limited_at| limited_at.elapsed().as_secs() < cooldown_secs);
+    }
+
+    /// Take one of the global LLM request slots, waiting if they are all busy.
+    ///
+    /// Every completion — streaming or not — funnels through here, so no
+    /// process in the agent can outrun the provider on its own. Waiting is the
+    /// point: a queued request that starts a second later is cheaper than a
+    /// request the provider rejects and the caller has to retry.
+    ///
+    /// Returns `None` only if the semaphore was closed, which cannot happen
+    /// while the manager is alive; the caller then proceeds unlimited rather
+    /// than losing the turn to a bookkeeping failure.
+    pub async fn acquire_llm_slot(&self) -> Option<OwnedSemaphorePermit> {
+        match self.llm_slots.clone().acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "LLM concurrency semaphore closed; running without a slot"
+                );
+                None
+            }
+        }
     }
 }
 
