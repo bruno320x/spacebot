@@ -188,5 +188,5 @@ name = "openapi-spec"
 path = "src/bin/openapi_spec.rs"
 
 [profile.release]
-lto = "thin"
+lto = false
 strip = true
