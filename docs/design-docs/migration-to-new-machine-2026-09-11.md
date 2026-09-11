@@ -478,6 +478,60 @@ spacebot secrets status               # secret deposu
 
 ---
 
+## 14. AÇIK SORU (pazartesi): temiz kurulum + hafıza nakli?
+
+> "Kod zaten GitHub'da — neden buradan migration yapıyoruz ki?"
+
+Haklı bir itiraz. Ama **kod** ile **hafıza** ayrı şeyler:
+
+| Katman | Temiz kurulum uygun mu? |
+|---|---|
+| **Kod** | ✅ `git clone` — bu zaten migration değil |
+| **config.toml** | ✅ Yeniden üretilebilir (2 KB, ~100 satır) — routing/insanlar/otonomi port edilir |
+| **Hafıza** | ❌ **Yeniden üretilemez** |
+
+### Neden hafıza taşınmak zorunda
+
+`agent.db` sağlıklı (`integrity_check = ok`, `foreign_key_check` boş) ve içinde:
+
+```
+memories                        503   (fact 224, observation 100, event 91,
+                                       decision 34, todo 24, preference 16,
+                                       goal 8, human 5, identity 1)
+associations                   2715   (related_to 2519, updates 148, part_of 39,
+                                       result_of 4, contradicts 4, caused_by 1)
+conversation_messages          1500
+working_memory_events          1531
+worker_runs                     534
+wake_events                     304
+channels / human_identities  12 / 5
+cron_jobs / wake_defs         1 / 2
+birikim aralığı      3 Eyl → 10 Eyl 2026
+```
+
+Vektörler: `agents/main/data/lancedb/` (159 MB) —
+`memory_embeddings.lance` + `chronicle_embeddings.lance`.
+
+**Kritik:** `spacebot memory` CLI'ında sadece `list` ve `search` var —
+**export/import YOK.** Yani hafıza grafiği (503 düğüm + 2715 kenar) dışa
+aktarılamaz; sadece **dosya olarak** taşınır. Temiz kurulum = **amnezi**.
+
+### Pazartesi vereceğimiz karar
+
+- **A) Temiz kurulum + hafıza nakli (öneri):** taze `~/.spacebot`, yeni config
+  (sadece routing + insanlar + ACP port edilir), fakat **`agent.db` +
+  `lancedb/` + `config.redb` + `settings.redb` + `secrets.redb`** taşınır.
+  → **~195 MB.** Birikmiş config çöpü (`config.toml.bak-*` ×6) ve dünkü DB
+  denemesinin izleri geride kalır.
+- **B) §3'teki tam taşıma:** 341 MB, `backups/` + `logs/` de gelir. Daha
+  muhafazakâr, ama eski çöpü de getirir.
+
+**Karar için gereken bilgi:** hafızayı korumak istiyor muyuz (503 anı +
+2715 ilişki), yoksa sıfırdan mı başlasın? `memory` CLI'da export olmadığı için
+"sonra aktarırız" diye bir seçenek **yok**.
+
+---
+
 ## İlgili dokümanlar
 
 - `worker-perf-stability-diagnosis-2026-09-11.md` — altı kök neden, ölçümler
