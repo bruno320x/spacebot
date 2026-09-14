@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-Unit tests for spacebot-acp-worker (the Intent bridge ACP worker).
+Unit tests for spacebot-acp-worker (the Intent bridge ACP worker), contract v2.1.
 
-Runs the worker module against a fake intentd daemon over a real UNIX socket
-and asserts the result-path contract from
-docs/design-docs/acp-intent-bridge-result-path-2026-09-11.md:
+The fake intentd mirrors the LIVE shapes verified against intentd 0.9.38 on
+2026-09-14 (docs/design-docs/acp-intent-bridge-result-path-2026-09-11.md §10.1):
 
-  1. session/prompt returns the REAL final text, not the routing ack.
-  2. Budget exhaustion is an explicit JSON-RPC error — never a silent
-     "completed".
-  3. A missing/unresponsive intentd is an error, not a done.
-  4. Events from other agents are filtered by agentId.
-  5. Empty stream:end text falls back to agent:idle lastResponseSummary.
-  6. agent.get failures are non-fatal when the event stream completes.
-  7. Progress/heartbeat updates never carry type "text" — only the final
-     completed update does — so the parent's accumulation stays clean.
+  - event.query RPC result: {"events": [...]} with `type` (not event_type),
+    `data` as an object (not data_json string), ISO timestamps, newest first.
+  - agent.get result: {"agent": {...}} — status/lastMessageRole are snake-ish
+    camelCase fields; lastAssistantPreview may be null (do not rely on it).
+  - Full assistant text lives ONLY in the agent_message SQLite table
+    (content = JSON block array) — read directly, read-only.
+  - `agent:message` events carry role+turnId but NOT the text; the bridge
+    must fetch the message body itself.
 
 Run:  python3 test_spacebot_acp_worker.py
 """
@@ -24,6 +22,7 @@ from importlib.machinery import SourceFileLoader
 import json
 import os
 import socket
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -40,24 +39,20 @@ def load_worker():
     return mod
 
 
-def ev(event_id, event_type, data, agent_id="agent-1"):
-    """Build an event row as intentd's event.query returns it (data_json is a string)."""
+def ev(event_id, event_type, data, agent_id="agent-1", ts="2026-09-14T07:00:00Z"):
+    """Build an event as intentd's event.query RPC returns it (live shape)."""
     return {
         "id": event_id,
-        "timestamp": 1000 + event_id,
-        "event_type": event_type,
-        "workspace_id": "spacebot-ile",
-        "data_json": json.dumps({"agentId": agent_id, **data}),
+        "timestamp": ts,
+        "type": event_type,
+        "workspaceId": "spacebot-ile",
+        "actor": {"type": "agent", "id": agent_id},
+        "data": {"agentId": agent_id, **data},
     }
 
 
 class FakeIntentd:
-    """Minimal intentd stand-in: agent.list / agent.sendMessage / agent.get / event.query.
-
-    Realism: `event.query` returns nothing until `agent.sendMessage` is called
-    (a turn's events only exist after routing), newest-first like the real
-    fixed ordering.
-    """
+    """Minimal intentd stand-in with the live-verified RPC shapes."""
 
     def __init__(self, events=None, agent_state=None, fail_agent_get=False):
         self.pending_events = list(events or [])
@@ -98,14 +93,16 @@ class FakeIntentd:
         except Exception:
             return
         self.calls.append(req.get("method"))
-        resp = self._respond(req)
+        resp = {"jsonrpc": "2.0", "id": req.get("id")}
+        resp.update(self._respond(req))
         conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
 
     def _respond(self, req):
         method = req.get("method")
         if method == "agent.list":
             return {"result": {"agents": [
-                {"id": "agent-1", "name": "Coordinator", "metadata": {"isInitialAgent": True}},
+                {"id": "agent-1", "name": "Coordinator",
+                 "metadata": {"isInitialAgent": True}},
             ]}}
         if method == "agent.sendMessage":
             if not self.events:
@@ -116,8 +113,8 @@ class FakeIntentd:
                 return {"error": {"code": -32000, "message": "boom"}}
             return {"result": {"agent": dict(self.agent_state)}}
         if method == "event.query":
-            ordered = sorted(self.events, key=lambda e: e.get("timestamp", 0), reverse=True)
-            return {"result": {"events": ordered}}
+            ordered = sorted(self.events, key=lambda e: e.get("timestamp", ""), reverse=True)
+            return {"result": ordered}  # LIVE shape: bare list
         return {"error": {"code": -32601, "message": f"unknown method {method}"}}
 
     def close(self):
@@ -126,12 +123,31 @@ class FakeIntentd:
         self._srv.close()
 
 
+def seed_message_db(socket_path, message_id, text):
+    """Create a real agent_message DB next to the fake socket, exactly like
+    the live one, so the bridge's direct read-only sqlite read works."""
+    db = os.path.join(os.path.dirname(socket_path), "intentd.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE agent_message (id TEXT PRIMARY KEY, agent_id TEXT, "
+        "seq INTEGER, role TEXT, content TEXT, created_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO agent_message (id, agent_id, seq, role, content, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (message_id, "agent-1", 2, "assistant",
+         json.dumps([{"type": "text", "id": f"{message_id}:0", "text": text}]),
+         "2026-09-14T07:00:01Z"),
+    )
+    conn.commit()
+    conn.close()
+
+
 class BridgeResultPathTest(unittest.TestCase):
     def setUp(self):
         self.mod = load_worker()
         self.updates = []
         self.mod.write_msg = lambda msg: self.updates.append(msg)
-        # Fast tests: tiny poll/budget unless the test overrides.
         self.mod.POLL_SECS = 0.05
         self.mod.RESULT_BUDGET_SECS = 5.0
         self.mod.HEARTBEAT_SECS = 3600.0
@@ -140,17 +156,24 @@ class BridgeResultPathTest(unittest.TestCase):
         if getattr(self, "fake", None):
             self.fake.close()
 
-    def _start_fake(self, **kwargs):
+    def _start_fake(self, seed_db_for=None, **kwargs):
         self.fake = FakeIntentd(**kwargs)
         self.mod.INTENT_SOCKET = self.fake.path
+        self.mod.INTENT_DB_PATH = os.path.join(os.path.dirname(self.fake.path), "intentd.db")
+        if seed_db_for:
+            seed_message_db(self.fake.path, seed_db_for[0], seed_db_for[1])
         return self.fake
 
-    # -- 1. the real result comes back -------------------------------------
+    # -- 1. the real result comes back (event -> sqlite full text) ----------
     def test_returns_real_final_text(self):
-        self._start_fake(events=[
-            ev(1, "agent:stream:status", {"message": "reading files"}),
-            ev(2, "agent:stream:end", {"lastAgentResponse": "4"}),
-        ])
+        self._start_fake(
+            seed_db_for=("msg-1", "4"),
+            events=[
+                ev(1, "agent:stream:status", {"message": "reading files"}),
+                ev(2, "agent:message", {"role": "assistant", "messageId": "msg-1",
+                                        "turnId": "turn-1"}),
+            ],
+        )
         resp = self.mod.handle_session_prompt(1, {
             "sessionId": "sess-1",
             "prompt": [{"type": "text", "text": "2+2 kac eder?"}],
@@ -192,35 +215,42 @@ class BridgeResultPathTest(unittest.TestCase):
     # -- 4. agentId filter ----------------------------------------------------
     def test_ignores_other_agents_events(self):
         self._start_fake(
+            seed_db_for=("msg-other", "wrong answer"),
             events=[
-                ev(1, "agent:stream:end", {"lastAgentResponse": "wrong answer"}, agent_id="other-agent"),
+                ev(1, "agent:message", {"role": "assistant", "messageId": "msg-other",
+                                        "turnId": "turn-1"}, agent_id="other-agent"),
             ],
-            agent_state={"status": "idle", "lastMessageRole": "assistant",
-                         "lastAssistantPreview": "correct answer"},
+            agent_state={"status": "idle", "lastMessageRole": "assistant"},
         )
         resp = self.mod.handle_session_prompt(1, {
             "sessionId": "sess-4",
             "prompt": [{"type": "text", "text": "task"}],
         })
-        self.assertEqual(resp["result"]["text"], "correct answer")
+        self.assertIn("error", resp, "other agents' completions must not finish OUR turn")
 
-    # -- 5. empty stream:end falls back to idle summary ----------------------
-    def test_empty_end_text_falls_back_to_idle_summary(self):
-        self._start_fake(events=[
-            ev(2, "agent:stream:end", {"lastAgentResponse": ""}),
-            ev(1, "agent:idle", {"lastResponseSummary": "summary text"}),
-        ])
+    # -- 5. lastAgentResponse fallback (live: it is the trailing chunk) ------
+    def test_last_agent_response_fallback_when_db_read_fails(self):
+        self._start_fake(
+            agent_state={"status": "idle", "lastMessageRole": "assistant"},
+            events=[
+                ev(2, "agent:last-message", {"role": "assistant", "turnId": "turn-1",
+                                             "lastAgentResponse": "fallback text"}),
+            ],
+        )
+        # No DB seeded -> sqlite read fails -> fall back to the event field.
         resp = self.mod.handle_session_prompt(1, {
             "sessionId": "sess-5",
             "prompt": [{"type": "text", "text": "task"}],
         })
-        self.assertEqual(resp["result"]["text"], "summary text")
+        self.assertEqual(resp["result"]["text"], "fallback text")
 
     # -- 6. agent.get failure is non-fatal ------------------------------------
     def test_agent_get_failure_does_not_break_event_completion(self):
         self._start_fake(
             fail_agent_get=True,
-            events=[ev(1, "agent:stream:end", {"lastAgentResponse": "from events"})],
+            seed_db_for=("msg-6", "from events"),
+            events=[ev(1, "agent:message", {"role": "assistant", "messageId": "msg-6",
+                                            "turnId": "turn-1"})],
         )
         resp = self.mod.handle_session_prompt(1, {
             "sessionId": "sess-6",
@@ -230,11 +260,15 @@ class BridgeResultPathTest(unittest.TestCase):
 
     # -- 7. progress/heartbeats never pollute the accumulated result ----------
     def test_progress_and_heartbeats_are_not_text(self):
-        self._start_fake(events=[
-            ev(1, "agent:stream:status", {"message": "step one"}),
-            ev(2, "agent:stream:status", {"message": "step two"}),
-            ev(3, "agent:stream:end", {"lastAgentResponse": "clean result"}),
-        ])
+        self._start_fake(
+            seed_db_for=("msg-7", "clean result"),
+            events=[
+                ev(1, "agent:stream:status", {"message": "step one"}),
+                ev(2, "agent:stream:status", {"message": "step two"}),
+                ev(3, "agent:message", {"role": "assistant", "messageId": "msg-7",
+                                        "turnId": "turn-1"}),
+            ],
+        )
         self.mod.HEARTBEAT_SECS = 0.0  # force a heartbeat on every idle poll
         resp = self.mod.handle_session_prompt(1, {
             "sessionId": "sess-7",
@@ -256,6 +290,48 @@ class BridgeResultPathTest(unittest.TestCase):
                      if (u["params"].get("content") or {}).get("type") == "intent_heartbeat"]
         self.assertGreater(len(heartbeat), 0, "idle polls should emit heartbeats")
 
+    # -- 8. non-text assistant messages (tool blocks) are skipped -------------
+    # -- 9. agent selection prefers the name "Coordinator" over the stale flag
+    def test_agent_selection_prefers_coordinator_name(self):
+        self._start_fake(events=[])
+        # Live bug: a renamed old agent still carries isInitialAgent; the
+        # bridge must pick the agent NAMED Coordinator.
+        self.mod.INTENT_SOCKET = self.fake.path
+        agents = [
+            {"id": "agent-old", "name": "pi-eski", "metadata": {"isInitialAgent": True}},
+            {"id": "agent-1", "name": "Coordinator"},
+        ]
+        self.fake._respond = lambda req: ({"result": {"agents": agents}}
+                                          if req.get("method") == "agent.list"
+                                          else FakeIntentd._respond(self.fake, req))
+        agent_id, name = self.mod.find_target_agent("spacebot-ile")
+        self.assertEqual((agent_id, name), ("agent-1", "Coordinator"))
+
+    def test_textless_assistant_message_is_skipped(self):
+        self._start_fake(
+            # DB row has NO text block -> bridge must not finish on it
+            events=[
+                ev(1, "agent:message", {"role": "assistant", "messageId": "msg-placeholder",
+                                        "turnId": "turn-1"}),
+            ],
+        )
+        # Seed a message whose content has NO text blocks (tool block only):
+        seed_message_db(self.fake.path, "msg-placeholder", "placeholder")
+        db = os.path.join(os.path.dirname(self.fake.path), "intentd.db")
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE agent_message SET content = ? WHERE id = ?",
+                     (json.dumps([{"type": "tool_use", "id": "t1", "name": "shell"}]),
+                      "msg-placeholder"))
+        conn.commit()
+        conn.close()
+
+        self.mod.RESULT_BUDGET_SECS = 0.3
+        resp = self.mod.handle_session_prompt(1, {
+            "sessionId": "sess-8",
+            "prompt": [{"type": "text", "text": "task"}],
+        })
+        self.assertIn("error", resp, "a textless message must not be the result")
+
 
 class BridgeFailurePathTest(unittest.TestCase):
     """Old-contract guards: the routing ack must never masquerade as a result."""
@@ -267,7 +343,6 @@ class BridgeFailurePathTest(unittest.TestCase):
         self.mod.POLL_SECS = 0.05
 
     def test_send_message_rpc_error_is_error(self):
-        # Socket exists but sendMessage fails -> explicit error.
         class RejectingFake(FakeIntentd):
             def _respond(self, req):
                 if req.get("method") == "agent.sendMessage":

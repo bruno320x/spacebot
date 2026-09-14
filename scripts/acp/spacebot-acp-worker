@@ -1,32 +1,39 @@
 #!/usr/bin/env python3
 """
-spacebot-acp-worker — Intent Daemon ACP Bridge Worker for Spacebot (v2)
+spacebot-acp-worker — Intent Daemon ACP Bridge Worker for Spacebot (v2.1)
 
-Launched by Spacebot's AcpWorker over stdio. Instead of spawning an isolated
-omp process, this worker attaches to the running Intent Daemon (intentd)
-JSON-RPC socket (~/.local/share/intentd/intentd.sock) and routes task prompts
-into the target Intent workspace (default: 'spacebot-ile').
+Launched by Spacebot's AcpWorker over stdio. Attaches to the running Intent
+Daemon (intentd) JSON-RPC socket and routes task prompts into the target
+Intent workspace (default: 'spacebot-ile'), then WAITS for the Intent turn
+to finish and returns the REAL final text.
 
-v2 — the result path (docs/design-docs/acp-intent-bridge-result-path-2026-09-11.md):
+v2.1 — live-verified contract (intentd 0.9.38, verified 2026-09-14; design
+doc §10.1). Differences from the doc's assumptions that this version fixes:
 
-  v1 routed the prompt and immediately reported "completed" with the routing
-  ack — a silent failure: worker_runs.result never carried the work's output.
+  - event.query RPC result events use `type` (not `event_type`) and `data`
+    as an object (not a `data_json` string), ISO timestamps, newest first.
+  - agent.get's lastAssistantPreview can be null even after completion, so
+    it is only a hint, never the primary source.
+  - `lastAgentResponse` in events is the TRAILING CHUNK of the reply, not
+    the full text. The full text lives only in the agent_message SQLite
+    table next to the socket (content = JSON block array), read directly,
+    read-only.
+  - Completion signal: an `agent:message` event with role=assistant for OUR
+    agentId and turnId; the body is then fetched from the DB.
 
-  v2 routes the prompt, then waits for the Intent turn to finish and returns
-  the REAL final text:
-    - cheap completion probe via `agent.get` (status/lastMessageRole/preview)
-    - event stream via `event.query` for live progress and the final text
-    - non-text progress + heartbeat `session/update`s keep the ACP session
-      alive and the parent's text accumulation clean (only the single final
-      "completed" update carries type "text")
-    - budget exhaustion, dead intentd and rejected prompts are explicit
-      JSON-RPC errors — never a silent "completed"
+Result-path guarantees (unchanged from v2):
+  - progress + heartbeat updates are non-text, so the parent's text
+    accumulation stays clean; exactly ONE "completed" update carries the
+    real text;
+  - budget exhaustion, dead intentd and rejected prompts are explicit
+    JSON-RPC errors — never a silent "completed".
 """
 
 import sys
 import os
 import json
 import socket
+import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
@@ -34,6 +41,14 @@ from datetime import datetime, timezone
 INTENT_SOCKET = os.environ.get(
     "INTENT_SOCKET",
     os.path.expanduser("~/.local/share/intentd/intentd.sock")
+)
+# The full assistant text lives in this DB (live-verified). Defaults to the
+# intentd.db next to the socket; tests point it at a seeded fixture.
+INTENT_DB_PATH = os.environ.get(
+    "INTENT_DB_PATH",
+    os.path.join(os.path.dirname(os.path.expanduser(
+        os.environ.get("INTENT_SOCKET", "~/.local/share/intentd/intentd.sock")
+    )), "intentd.db")
 )
 TARGET_WORKSPACE = os.environ.get("INTENT_WORKSPACE_ID", "spacebot-ile")
 TARGET_AGENT_ID = os.environ.get("INTENT_AGENT_ID", None)
@@ -48,10 +63,11 @@ POLL_SECS = float(os.environ.get("INTENT_POLL_SECS", "2"))
 HEARTBEAT_SECS = float(os.environ.get("INTENT_HEARTBEAT_SECS", "60"))
 EVENT_LIMIT = int(os.environ.get("INTENT_EVENT_LIMIT", "100"))
 
-# Event types (verified against intentd 0.9.38, protocol 9.11 — design doc §3).
+# Event types (live-verified names against intentd 0.9.38).
 EVENT_STREAM_STATUS = "agent:stream:status"
-EVENT_STREAM_END = "agent:stream:end"
+EVENT_MESSAGE = "agent:message"
 EVENT_LAST_MESSAGE = "agent:last-message"
+EVENT_STREAM_END = "agent:stream:end"
 EVENT_IDLE = "agent:idle"
 EVENT_STATUS_CHANGED = ("agent:updated", "agent:status-changed")
 FAILURE_STATUSES = {"failed", "error", "cancelled"}
@@ -122,9 +138,13 @@ def find_target_agent(workspace_id: str) -> tuple:
             if a.get("id") == TARGET_AGENT_ID:
                 return (a.get("id"), a.get("name", "TargetAgent"))
 
-    # Prioritize Coordinator / initial agent
+    # Prioritize by name strictly first (a renamed old agent may still carry
+    # the isInitialAgent flag), then by the flag, then the first agent.
     for a in agents:
-        if a.get("name") == "Coordinator" or a.get("metadata", {}).get("isInitialAgent"):
+        if a.get("name") == "Coordinator":
+            return (a.get("id"), a.get("name", "Coordinator"))
+    for a in agents:
+        if a.get("metadata", {}).get("isInitialAgent"):
             return (a.get("id"), a.get("name", "Coordinator"))
 
     first = agents[0]
@@ -154,23 +174,40 @@ def send_task_to_intent(prompt_text: str, session_id: str, agent_id: str) -> tup
     turn_id = result.get("turnId", "ack")
     return (True, f"routed, turn {turn_id}")
 
-def newest_event_timestamp(workspace_id: str):
-    """Cursor start: the newest event timestamp, so we only see fresh events."""
-    res = intentd_call("event.query", {"workspaceId": workspace_id, "limit": 1})
-    if res.get("error") or "result" not in res:
-        return 0
-    events = res.get("result", {}).get("events", [])
-    if not events:
-        return 0
-    return events[0].get("timestamp", 0) or 0
+def events_from_result(res) -> list:
+    """Extract the event list from an event.query response.
 
-def events_since(workspace_id: str, cursor, limit: int) -> list:
-    """Events newer than the cursor, newest first (intentd's fixed ordering)."""
+    LIVE-verified: the RPC result is a BARE LIST ({"result": [...]}), not an
+    object with an "events" key. Accept both for safety.
+    """
+    result = res.get("result")
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        return result.get("events", [])
+    return []
+
+def newest_event_ts(workspace_id: str):
+    """Cursor start: newest event timestamp (ISO), so we only see fresh events.
+
+    ISO timestamps sort lexicographically, so a plain string max() works —
+    only across the SAME format, which a single daemon guarantees.
+    """
+    res = intentd_call("event.query", {"workspaceId": workspace_id, "limit": 1})
+    if res.get("error"):
+        return ""
+    events = events_from_result(res)
+    if not events:
+        return ""
+    return events[0].get("timestamp", "") or ""
+
+def events_since(workspace_id: str, cursor: str, limit: int) -> list:
+    """Events newer than the ISO cursor, newest first (live fixed ordering)."""
     res = intentd_call("event.query", {"workspaceId": workspace_id, "limit": limit})
-    if res.get("error") or "result" not in res:
+    if res.get("error"):
         return []
-    events = res.get("result", {}).get("events", [])
-    return [e for e in events if (e.get("timestamp", 0) or 0) > cursor]
+    events = events_from_result(res)
+    return [e for e in events if (e.get("timestamp") or "") > cursor]
 
 def get_agent_state(agent_id: str):
     """Cheap completion probe. Returns the agent dict, or None on any failure."""
@@ -179,16 +216,48 @@ def get_agent_state(agent_id: str):
         return None
     return res.get("result", {}).get("agent") or None
 
-def completion_text_from_state(state: dict):
-    """Final text from agent.get state, if the turn has finished."""
+def agent_idle_hint(agent_id: str):
+    """Cheap hint that the turn MIGHT be over (live: preview can be null).
+    Returns (is_idle_hint: bool, preview_text_or_None)."""
+    state = get_agent_state(agent_id)
     if not isinstance(state, dict):
+        return (False, None)
+    idle = state.get("status") == "idle" and state.get("lastMessageRole") == "assistant"
+    return (idle, state.get("lastAssistantPreview"))
+
+def fetch_message_text(db_path: str, message_id: str):
+    """Full assistant text from the agent_message table (live-verified: the
+    only place the complete body lives). Read-only; returns None on failure.
+
+    content is a JSON array of blocks: [{"type": "text", "text": "..."}].
+    Concatenates ALL text blocks (multi-block replies are normal).
+    """
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            row = conn.execute(
+                "SELECT role, content FROM agent_message WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        log(f"agent_message read failed for {message_id}: {e}")
         return None
-    if state.get("status") != "idle":
+    if not row:
         return None
-    if state.get("lastMessageRole") != "assistant":
+    role, content = row
+    if role != "assistant":
         return None
-    text = state.get("lastAssistantPreview") or state.get("completionReport")
-    return text if text and text.strip() else None
+    try:
+        blocks = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    texts = [b.get("text", "") for b in blocks
+             if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+    if not texts:
+        return None  # textless (tool blocks etc.) — not a result
+    return "\n".join(texts)
 
 def extract_prompt_text(raw_prompt):
     """Extract text from an ACP prompt array or string."""
@@ -225,7 +294,7 @@ def handle_initialize(req_id):
         "id": req_id,
         "result": {
             "protocolVersion": 1,
-            "agentVersion": "spacebot-intentd-bridge/2.0",
+            "agentVersion": "spacebot-intentd-bridge/2.1",
             "agentCapabilities": {
                 "loadSession": False,
                 "session": {}
@@ -260,11 +329,12 @@ def handle_session_prompt(req_id, params):
                             f"No suitable agent found in workspace '{TARGET_WORKSPACE}'")
 
     # Cursor before routing: only events from OUR turn are observed.
-    cursor = newest_event_timestamp(TARGET_WORKSPACE)
+    cursor = newest_event_ts(TARGET_WORKSPACE)
 
     ok, info = send_task_to_intent(prompt_text, session_id, agent_id)
     if not ok:
         return finish_error(req_id, session_id, info)
+    turn_id = info.split("turn ", 1)[1] if "turn " in info else None
 
     last_status = info
     send_update(session_id, "running", {
@@ -275,14 +345,13 @@ def handle_session_prompt(req_id, params):
     deadline = time.monotonic() + RESULT_BUDGET_SECS
     seen_ids = set()
     last_heartbeat = time.monotonic()
+    trailing_chunk = None  # lastAgentResponse: the reply's trailing chunk
 
     while time.monotonic() < deadline:
         time.sleep(POLL_SECS)
 
-        # (B) cheap completion probe via agent.get
-        text = completion_text_from_state(get_agent_state(agent_id))
-        if text:
-            return finish_success(req_id, session_id, text)
+        # (B) cheap idle hint via agent.get (preview is unreliable — hint only)
+        idle, preview = agent_idle_hint(agent_id)
 
         # Heartbeat keeps the parent's per-line timeout from firing during
         # silent stretches. Non-text, so the accumulated result stays clean.
@@ -294,23 +363,22 @@ def handle_session_prompt(req_id, params):
             })
             last_heartbeat = now
 
-        # (A) event stream: live progress + the authoritative final text
+        # (A) event stream: progress, completion signal, trailing chunk
         for event in reversed(events_since(TARGET_WORKSPACE, cursor, EVENT_LIMIT)):
             event_id = event.get("id")
             if event_id in seen_ids:
                 continue
             seen_ids.add(event_id)
-            cursor = max(cursor, event.get("timestamp", 0) or 0)
+            cursor = max(cursor, event.get("timestamp") or "")
 
-            try:
-                data = json.loads(event.get("data_json") or "{}")
-            except (TypeError, ValueError):
-                continue
+            data = event.get("data") or {}
             if data.get("agentId") != agent_id:
-                continue
+                continue  # other agents' events are not ours
 
-            event_type = event.get("event_type", "")
-            if event_type == EVENT_STREAM_STATUS:
+            event_type = event.get("type", "")
+            turn_matches = (turn_id is None or data.get("turnId") in (None, turn_id))
+
+            if event_type == EVENT_STREAM_STATUS and turn_matches:
                 message = data.get("message", "")
                 if message:
                     last_status = message
@@ -318,15 +386,22 @@ def handle_session_prompt(req_id, params):
                         "type": "intent_progress",
                         "text": f"[Intent] {message}"
                     })
-            elif event_type in (EVENT_STREAM_END, EVENT_LAST_MESSAGE):
-                text = data.get("lastAgentResponse", "")
+            elif event_type == EVENT_MESSAGE and turn_matches \
+                    and data.get("role") == "assistant":
+                # Live-verified: the event has no body; fetch the full text.
+                text = fetch_message_text(INTENT_DB_PATH, data.get("messageId"))
                 if text and text.strip():
                     return finish_success(req_id, session_id, text)
-                # Empty end text: fall through and wait for the idle summary.
-            elif event_type == EVENT_IDLE:
-                text = data.get("lastResponseSummary", "")
-                if text and text.strip():
-                    return finish_success(req_id, session_id, text)
+                # Textless or unreadable: keep waiting (not a result).
+            elif event_type in (EVENT_LAST_MESSAGE, EVENT_STREAM_END) and turn_matches \
+                    and data.get("role", "assistant") == "assistant":
+                chunk = data.get("lastAgentResponse", "")
+                if chunk and chunk.strip():
+                    trailing_chunk = chunk
+            elif event_type == EVENT_IDLE and turn_matches:
+                summary = data.get("lastResponseSummary", "")
+                if summary and summary.strip():
+                    trailing_chunk = summary
             elif event_type in EVENT_STATUS_CHANGED:
                 status = data.get("status") or data.get("newStatus")
                 if status in FAILURE_STATUSES:
@@ -334,6 +409,15 @@ def handle_session_prompt(req_id, params):
                         req_id, session_id,
                         f"Intent agent entered '{status}' state (last: {last_status})"
                     )
+
+        # Idle + nothing newer to read: try the trailing chunk as the result.
+        if idle and trailing_chunk:
+            # Prefer the DB body of the last assistant message when the
+            # agent.get state exposes its id.
+            state = get_agent_state(agent_id) or {}
+            mid = state.get("lastMessageId")
+            text = fetch_message_text(INTENT_DB_PATH, mid) if mid else None
+            return finish_success(req_id, session_id, text or trailing_chunk)
 
     # Budget exhausted: an explicit error, NEVER a silent "completed".
     return finish_error(
@@ -363,11 +447,12 @@ def handle_permission_request(req_id, params):
 def run_test_handshake():
     """Run an end-to-end self-test ACP handshake against intentd.
 
-    v2 note: session/prompt now WAITS for the Intent turn to finish and
-    returns the real final text, so this check proves the whole result path.
+    v2.1 note: session/prompt WAITS for the Intent turn and returns the real
+    final text, so this check proves the whole result path live.
     """
     print("=== Testing Spacebot ACP Worker <-> Intent Daemon Bridge ===")
     print(f"Target socket:    {INTENT_SOCKET}")
+    print(f"Target DB:        {INTENT_DB_PATH}")
     print(f"Target workspace: {TARGET_WORKSPACE}")
     print(f"Result budget:    {RESULT_BUDGET_SECS:.0f}s (poll {POLL_SECS}s, heartbeat {HEARTBEAT_SECS}s)")
 
@@ -407,7 +492,7 @@ def run_test_handshake():
     assert session_id
     print(f"[OK] ACP session/new validated (Session ID: {session_id})")
 
-    # 5. Simulate ACP session/prompt — v2 waits for the real result
+    # 5. Simulate ACP session/prompt — v2.1 waits for the real result
     test_prompt = f"[ACP Handshake Verification] Test ping from spacebot-acp-worker at {datetime.now(timezone.utc).isoformat()}"
     print("[..] ACP session/prompt sent; waiting for the Intent turn to finish...")
     prompt_resp = handle_session_prompt(1, {"sessionId": session_id, "prompt": [{"type": "text", "text": test_prompt}]})
@@ -428,6 +513,7 @@ def run_status():
     """Print connection and workspace status."""
     print("=== Spacebot ACP Worker Bridge Status ===")
     print(f"Socket:    {INTENT_SOCKET} ({'FOUND' if os.path.exists(INTENT_SOCKET) else 'MISSING'})")
+    print(f"DB:        {INTENT_DB_PATH} ({'FOUND' if os.path.exists(INTENT_DB_PATH) else 'MISSING'})")
     print(f"Workspace: {TARGET_WORKSPACE}")
     print(f"Budget:    {RESULT_BUDGET_SECS:.0f}s | poll {POLL_SECS}s | heartbeat {HEARTBEAT_SECS}s | event limit {EVENT_LIMIT}")
     if os.path.exists(INTENT_SOCKET):
@@ -454,7 +540,7 @@ def main():
         sys.exit(0)
 
     # Standard ACP stdio server loop
-    log(f"Starting ACP stdio worker bridge v2 (target workspace: {TARGET_WORKSPACE})")
+    log(f"Starting ACP stdio worker bridge v2.1 (target workspace: {TARGET_WORKSPACE})")
     for raw_line in sys.stdin:
         line = raw_line.strip()
         if not line:

@@ -320,3 +320,31 @@ v1 script'e karşı gerçekten başarısız oldu (yönlendirme onayı sonuç gib
 **Henüz yapılmadı (§9'un canlı adımları):** intentd kapalı olduğu için gerçek
 daemon'a karşı `--test` doğrulaması ve `worker_runs.result` uçtan uca kontrolü
 — J0'ın ilk çalıştırma adımında yapılacak.
+
+## 10.1 Canlı doğrulama — dokümanın yanlış varsayımları düzeltildi (2026-09-14)
+
+Köprü v2 canlı intentd (0.9.38) ile test edildi. Bu bölüm, yukarıdaki
+şema varsayımlarının **doğrulanmış gerçekleriyle** düzeltmesidir:
+
+| Dokümanın varsayımı (§3, DB'den) | Canlı RPC gerçeği (doğrulandı) |
+|---|---|
+| `event.query` satırlarında `event_type` + `data_json` (string) | **`type` + `data` (obje)**, ISO timestamp, en yeniden eskiye |
+| `event.query` sonucu `{events: [...]}` içine sarılı | **Çıplak liste** (`{"result": [...]}`) |
+| `lastAgentResponse` = tam metin | Sadece **son parça (trailing chunk)** |
+| `agent.get.lastAssistantPreview` güvenilir | Tamamlanmadan sonra bile **null** olabiliyor — sadece ipucu |
+| Tam metin olaylardan okunur | Tam metin **yalnızca `agent_message` tablosunda** (`content` = JSON block array); RPC ile okunacak method **yok** |
+
+**v2.1 köprünün davranışı (canlıda doğrulandı):**
+
+- Bitiş sinyali: bizim `agentId` + `turnId`'ye filtreli `agent:message` (role=assistant)
+  olayı → gövde `agent_message` tablosundan (read-only sqlite) okunur; okunamazsa
+  `lastAgentResponse` fallback'i.
+- Agent seçimi: ismi tam olarak "Coordinator" olan önce (yeniden adlandırılmış eski
+  agent hâlâ `isInitialAgent` taşıyabiliyor — canlıda yakalandı).
+- `intentd.db` yolu socket'in yanından türetilir (`INTENT_DB_PATH` ile override).
+
+**Canlı test sonucu (2026-09-14):** `--test` uçtan uca YEŞİL — köprü görevi
+iletti, turun bitmesini bekledi, `agent_message`'tan gerçek gövdeyi okuyup
+`result.text` olarak döndürdü. Dönen metin Google `429 RESOURCE_EXHAUSTED`
+hatasıydı: sonuç yolu çalışıyor; hata model sağlayıcısının kotasından
+(senin kodun ya da köprünün değil). Unit testler: 10/10.
