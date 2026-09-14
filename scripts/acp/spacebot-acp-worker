@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""
+spacebot-acp-worker — Intent Daemon ACP Bridge Worker for Spacebot (v2)
+
+Launched by Spacebot's AcpWorker over stdio. Instead of spawning an isolated
+omp process, this worker attaches to the running Intent Daemon (intentd)
+JSON-RPC socket (~/.local/share/intentd/intentd.sock) and routes task prompts
+into the target Intent workspace (default: 'spacebot-ile').
+
+v2 — the result path (docs/design-docs/acp-intent-bridge-result-path-2026-09-11.md):
+
+  v1 routed the prompt and immediately reported "completed" with the routing
+  ack — a silent failure: worker_runs.result never carried the work's output.
+
+  v2 routes the prompt, then waits for the Intent turn to finish and returns
+  the REAL final text:
+    - cheap completion probe via `agent.get` (status/lastMessageRole/preview)
+    - event stream via `event.query` for live progress and the final text
+    - non-text progress + heartbeat `session/update`s keep the ACP session
+      alive and the parent's text accumulation clean (only the single final
+      "completed" update carries type "text")
+    - budget exhaustion, dead intentd and rejected prompts are explicit
+      JSON-RPC errors — never a silent "completed"
+"""
+
+import sys
+import os
+import json
+import socket
+import time
+import uuid
+from datetime import datetime, timezone
+
+INTENT_SOCKET = os.environ.get(
+    "INTENT_SOCKET",
+    os.path.expanduser("~/.local/share/intentd/intentd.sock")
+)
+TARGET_WORKSPACE = os.environ.get("INTENT_WORKSPACE_ID", "spacebot-ile")
+TARGET_AGENT_ID = os.environ.get("INTENT_AGENT_ID", None)
+MESSAGE_PRIORITY = os.environ.get("INTENT_MESSAGE_PRIORITY", "queue")
+
+# Result-path tuning (see design doc §5).
+# RESULT_BUDGET_SECS must stay ABOVE the parent's per-line prompt timeout
+# (prompt_timeout_secs = 600): the heartbeat keeps lines flowing, so the
+# parent never times out first and the bridge owns the budget decision.
+RESULT_BUDGET_SECS = float(os.environ.get("INTENT_RESULT_BUDGET_SECS", "900"))
+POLL_SECS = float(os.environ.get("INTENT_POLL_SECS", "2"))
+HEARTBEAT_SECS = float(os.environ.get("INTENT_HEARTBEAT_SECS", "60"))
+EVENT_LIMIT = int(os.environ.get("INTENT_EVENT_LIMIT", "100"))
+
+# Event types (verified against intentd 0.9.38, protocol 9.11 — design doc §3).
+EVENT_STREAM_STATUS = "agent:stream:status"
+EVENT_STREAM_END = "agent:stream:end"
+EVENT_LAST_MESSAGE = "agent:last-message"
+EVENT_IDLE = "agent:idle"
+EVENT_STATUS_CHANGED = ("agent:updated", "agent:status-changed")
+FAILURE_STATUSES = {"failed", "error", "cancelled"}
+
+
+def log(text: str):
+    """Log diagnostics to stderr so it does not interfere with stdio JSON-RPC."""
+    sys.stderr.write(f"[spacebot-acp-worker] {text}\n")
+    sys.stderr.flush()
+
+def write_msg(msg: dict):
+    """Write a newline-delimited JSON-RPC message to stdout."""
+    payload = json.dumps(msg) + "\n"
+    sys.stdout.write(payload)
+    sys.stdout.flush()
+
+def send_update(session_id: str, status: str, content: dict):
+    """Emit a session/update notification to the ACP parent."""
+    write_msg({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "status": status,
+            "content": content,
+        },
+    })
+
+def intentd_call(method: str, params: dict = None, timeout: float = 15.0) -> dict:
+    """Send a JSON-RPC request to intentd over the UNIX domain socket."""
+    if not os.path.exists(INTENT_SOCKET):
+        return {"error": True, "detail": f"Socket not found at {INTENT_SOCKET}"}
+
+    req = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params or {}
+    }
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect(INTENT_SOCKET)
+        payload = (json.dumps(req) + "\n").encode("utf-8")
+        sock.sendall(payload)
+
+        file_obj = sock.makefile("r", encoding="utf-8")
+        line = file_obj.readline()
+        sock.close()
+        if not line:
+            return {"error": True, "detail": "Empty response from intentd socket"}
+        return json.loads(line)
+    except Exception as e:
+        return {"error": True, "detail": str(e)}
+
+def find_target_agent(workspace_id: str) -> tuple:
+    """Find target agent in the given workspace. Returns (agent_id, agent_name)."""
+    res = intentd_call("agent.list", {"workspaceId": workspace_id})
+    if res.get("error") or "result" not in res:
+        return (None, None)
+
+    agents = res.get("result", {}).get("agents", [])
+    if not agents:
+        return (None, None)
+
+    if TARGET_AGENT_ID:
+        for a in agents:
+            if a.get("id") == TARGET_AGENT_ID:
+                return (a.get("id"), a.get("name", "TargetAgent"))
+
+    # Prioritize Coordinator / initial agent
+    for a in agents:
+        if a.get("name") == "Coordinator" or a.get("metadata", {}).get("isInitialAgent"):
+            return (a.get("id"), a.get("name", "Coordinator"))
+
+    first = agents[0]
+    return (first.get("id"), first.get("name", "Agent"))
+
+def send_task_to_intent(prompt_text: str, session_id: str, agent_id: str) -> tuple:
+    """Route a task prompt to intentd. Returns (success: bool, detail: str)."""
+    params = {
+        "workspaceId": TARGET_WORKSPACE,
+        "agentId": agent_id,
+        "content": prompt_text,
+        "priority": MESSAGE_PRIORITY,
+        "messageMetadata": {
+            "source": "spacebot-acp-worker",
+            "sessionId": session_id,
+            "routedAt": datetime.now(timezone.utc).isoformat()
+        }
+    }
+    res = intentd_call("agent.sendMessage", params)
+    if res.get("error"):
+        detail = res.get("detail") or res.get("error")
+        if isinstance(detail, dict):
+            detail = detail.get("message", detail)
+        return (False, f"intentd sendMessage failed: {detail}")
+
+    result = res.get("result", {})
+    turn_id = result.get("turnId", "ack")
+    return (True, f"routed, turn {turn_id}")
+
+def newest_event_timestamp(workspace_id: str):
+    """Cursor start: the newest event timestamp, so we only see fresh events."""
+    res = intentd_call("event.query", {"workspaceId": workspace_id, "limit": 1})
+    if res.get("error") or "result" not in res:
+        return 0
+    events = res.get("result", {}).get("events", [])
+    if not events:
+        return 0
+    return events[0].get("timestamp", 0) or 0
+
+def events_since(workspace_id: str, cursor, limit: int) -> list:
+    """Events newer than the cursor, newest first (intentd's fixed ordering)."""
+    res = intentd_call("event.query", {"workspaceId": workspace_id, "limit": limit})
+    if res.get("error") or "result" not in res:
+        return []
+    events = res.get("result", {}).get("events", [])
+    return [e for e in events if (e.get("timestamp", 0) or 0) > cursor]
+
+def get_agent_state(agent_id: str):
+    """Cheap completion probe. Returns the agent dict, or None on any failure."""
+    res = intentd_call("agent.get", {"agentId": agent_id})
+    if res.get("error") or "result" not in res:
+        return None
+    return res.get("result", {}).get("agent") or None
+
+def completion_text_from_state(state: dict):
+    """Final text from agent.get state, if the turn has finished."""
+    if not isinstance(state, dict):
+        return None
+    if state.get("status") != "idle":
+        return None
+    if state.get("lastMessageRole") != "assistant":
+        return None
+    text = state.get("lastAssistantPreview") or state.get("completionReport")
+    return text if text and text.strip() else None
+
+def extract_prompt_text(raw_prompt):
+    """Extract text from an ACP prompt array or string."""
+    if isinstance(raw_prompt, list):
+        prompt_parts = []
+        for block in raw_prompt:
+            if isinstance(block, dict) and block.get("type") == "text":
+                prompt_parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                prompt_parts.append(block)
+        return "\n".join(prompt_parts)
+    if isinstance(raw_prompt, dict):
+        return raw_prompt.get("text", str(raw_prompt))
+    return str(raw_prompt)
+
+def finish_success(req_id: int, session_id: str, text: str) -> dict:
+    """The one and only update that carries type 'text' — the real result."""
+    send_update(session_id, "completed", {"type": "text", "text": text})
+    return {"jsonrpc": "2.0", "id": req_id, "result": {"text": text}}
+
+def finish_error(req_id: int, session_id: str, message: str) -> dict:
+    """Explicit failure — never a silent 'completed' (harness Pillar 2)."""
+    log(f"prompt failed: {message}")
+    send_update(session_id, "error", {"type": "intent_error", "text": message})
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32603, "message": message}
+    }
+
+def handle_initialize(req_id):
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "protocolVersion": 1,
+            "agentVersion": "spacebot-intentd-bridge/2.0",
+            "agentCapabilities": {
+                "loadSession": False,
+                "session": {}
+            }
+        }
+    }
+
+def handle_session_new(req_id, params):
+    session_id = str(uuid.uuid4())
+    log(f"Session created: {session_id}")
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "sessionId": session_id
+        }
+    }
+
+def handle_session_prompt(req_id, params):
+    session_id = params.get("sessionId", str(uuid.uuid4()))
+    prompt_text = extract_prompt_text(params.get("prompt", ""))
+    log(f"Received prompt for session {session_id} ({len(prompt_text)} chars)")
+
+    send_update(session_id, "running", {
+        "type": "intent_progress",
+        "text": f"[Intent] attaching to intentd (workspace: {TARGET_WORKSPACE})..."
+    })
+
+    agent_id, agent_name = find_target_agent(TARGET_WORKSPACE)
+    if not agent_id:
+        return finish_error(req_id, session_id,
+                            f"No suitable agent found in workspace '{TARGET_WORKSPACE}'")
+
+    # Cursor before routing: only events from OUR turn are observed.
+    cursor = newest_event_timestamp(TARGET_WORKSPACE)
+
+    ok, info = send_task_to_intent(prompt_text, session_id, agent_id)
+    if not ok:
+        return finish_error(req_id, session_id, info)
+
+    last_status = info
+    send_update(session_id, "running", {
+        "type": "intent_progress",
+        "text": f"[Intent] {agent_name}: {info}"
+    })
+
+    deadline = time.monotonic() + RESULT_BUDGET_SECS
+    seen_ids = set()
+    last_heartbeat = time.monotonic()
+
+    while time.monotonic() < deadline:
+        time.sleep(POLL_SECS)
+
+        # (B) cheap completion probe via agent.get
+        text = completion_text_from_state(get_agent_state(agent_id))
+        if text:
+            return finish_success(req_id, session_id, text)
+
+        # Heartbeat keeps the parent's per-line timeout from firing during
+        # silent stretches. Non-text, so the accumulated result stays clean.
+        now = time.monotonic()
+        if now - last_heartbeat >= HEARTBEAT_SECS:
+            send_update(session_id, "running", {
+                "type": "intent_heartbeat",
+                "text": f"[Intent] still working... last: {last_status}"
+            })
+            last_heartbeat = now
+
+        # (A) event stream: live progress + the authoritative final text
+        for event in reversed(events_since(TARGET_WORKSPACE, cursor, EVENT_LIMIT)):
+            event_id = event.get("id")
+            if event_id in seen_ids:
+                continue
+            seen_ids.add(event_id)
+            cursor = max(cursor, event.get("timestamp", 0) or 0)
+
+            try:
+                data = json.loads(event.get("data_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if data.get("agentId") != agent_id:
+                continue
+
+            event_type = event.get("event_type", "")
+            if event_type == EVENT_STREAM_STATUS:
+                message = data.get("message", "")
+                if message:
+                    last_status = message
+                    send_update(session_id, "running", {
+                        "type": "intent_progress",
+                        "text": f"[Intent] {message}"
+                    })
+            elif event_type in (EVENT_STREAM_END, EVENT_LAST_MESSAGE):
+                text = data.get("lastAgentResponse", "")
+                if text and text.strip():
+                    return finish_success(req_id, session_id, text)
+                # Empty end text: fall through and wait for the idle summary.
+            elif event_type == EVENT_IDLE:
+                text = data.get("lastResponseSummary", "")
+                if text and text.strip():
+                    return finish_success(req_id, session_id, text)
+            elif event_type in EVENT_STATUS_CHANGED:
+                status = data.get("status") or data.get("newStatus")
+                if status in FAILURE_STATUSES:
+                    return finish_error(
+                        req_id, session_id,
+                        f"Intent agent entered '{status}' state (last: {last_status})"
+                    )
+
+    # Budget exhausted: an explicit error, NEVER a silent "completed".
+    return finish_error(
+        req_id, session_id,
+        f"Intent turn did not complete within {RESULT_BUDGET_SECS:.0f}s "
+        f"(last status: {last_status})"
+    )
+
+def handle_session_exit(req_id, params):
+    session_id = params.get("sessionId", "")
+    log(f"Session exited: {session_id}")
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {}
+    }
+
+def handle_permission_request(req_id, params):
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "outcome": "allowed"
+        }
+    }
+
+def run_test_handshake():
+    """Run an end-to-end self-test ACP handshake against intentd.
+
+    v2 note: session/prompt now WAITS for the Intent turn to finish and
+    returns the real final text, so this check proves the whole result path.
+    """
+    print("=== Testing Spacebot ACP Worker <-> Intent Daemon Bridge ===")
+    print(f"Target socket:    {INTENT_SOCKET}")
+    print(f"Target workspace: {TARGET_WORKSPACE}")
+    print(f"Result budget:    {RESULT_BUDGET_SECS:.0f}s (poll {POLL_SECS}s, heartbeat {HEARTBEAT_SECS}s)")
+
+    # 1. Test socket presence and status
+    if not os.path.exists(INTENT_SOCKET):
+        print(f"[FAIL] Socket does not exist at {INTENT_SOCKET}")
+        return False
+
+    ws_res = intentd_call("workspace.list")
+    if ws_res.get("error"):
+        print(f"[FAIL] Socket query failed: {ws_res.get('detail')}")
+        return False
+    workspaces = ws_res.get("result", {}).get("workspaces", [])
+    print(f"[OK] Intent Daemon is live with {len(workspaces)} workspace(s)")
+
+    target_ws = next((w for w in workspaces if w.get("id") == TARGET_WORKSPACE), None)
+    if not target_ws:
+        print(f"[FAIL] Target workspace '{TARGET_WORKSPACE}' not found")
+        return False
+    print(f"[OK] Found target workspace: '{TARGET_WORKSPACE}' ({target_ws.get('title')})")
+
+    # 2. Test agent lookup
+    agent_id, agent_name = find_target_agent(TARGET_WORKSPACE)
+    if not agent_id:
+        print(f"[FAIL] No agent found in '{TARGET_WORKSPACE}'")
+        return False
+    print(f"[OK] Target agent resolved: '{agent_name}' ({agent_id})")
+
+    # 3. Simulate ACP initialize
+    init_resp = handle_initialize(0)
+    assert init_resp.get("result", {}).get("protocolVersion") == 1
+    print("[OK] ACP initialize handshake validated")
+
+    # 4. Simulate ACP session/new
+    new_resp = handle_session_new(1, {"cwd": "/tmp/intent-demo-repo"})
+    session_id = new_resp.get("result", {}).get("sessionId")
+    assert session_id
+    print(f"[OK] ACP session/new validated (Session ID: {session_id})")
+
+    # 5. Simulate ACP session/prompt — v2 waits for the real result
+    test_prompt = f"[ACP Handshake Verification] Test ping from spacebot-acp-worker at {datetime.now(timezone.utc).isoformat()}"
+    print("[..] ACP session/prompt sent; waiting for the Intent turn to finish...")
+    prompt_resp = handle_session_prompt(1, {"sessionId": session_id, "prompt": [{"type": "text", "text": test_prompt}]})
+    if "error" in prompt_resp:
+        print(f"[FAIL] ACP session/prompt failed: {prompt_resp.get('error')}")
+        return False
+    print(f"[OK] Real result returned: {prompt_resp.get('result', {}).get('text')}")
+
+    # 6. Simulate session/exit
+    exit_resp = handle_session_exit(2, {"sessionId": session_id})
+    assert exit_resp.get("result") == {}
+    print("[OK] ACP session/exit validated")
+
+    print("\n>>> ALL CHECKS PASSED: result path is live (real text, no silent done) <<<")
+    return True
+
+def run_status():
+    """Print connection and workspace status."""
+    print("=== Spacebot ACP Worker Bridge Status ===")
+    print(f"Socket:    {INTENT_SOCKET} ({'FOUND' if os.path.exists(INTENT_SOCKET) else 'MISSING'})")
+    print(f"Workspace: {TARGET_WORKSPACE}")
+    print(f"Budget:    {RESULT_BUDGET_SECS:.0f}s | poll {POLL_SECS}s | heartbeat {HEARTBEAT_SECS}s | event limit {EVENT_LIMIT}")
+    if os.path.exists(INTENT_SOCKET):
+        agent_id, agent_name = find_target_agent(TARGET_WORKSPACE)
+        if agent_id:
+            print(f"Agent:     {agent_name} ({agent_id})")
+        else:
+            print(f"Agent:     [None found in workspace {TARGET_WORKSPACE}]")
+    else:
+        print("Agent:     [Unavailable - Socket missing]")
+
+def main():
+    # Parse CLI flags if invoked manually
+    args = sys.argv[1:]
+    if "--test" in args or "--handshake" in args:
+        success = run_test_handshake()
+        sys.exit(0 if success else 1)
+    if "--status" in args:
+        run_status()
+        sys.exit(0)
+    if "--help" in args or "-h" in args:
+        print("Usage: spacebot-acp-worker [--test|--handshake] [--status] [--help]")
+        print("When run without test flags, runs as ACP stdio worker for Spacebot.")
+        sys.exit(0)
+
+    # Standard ACP stdio server loop
+    log(f"Starting ACP stdio worker bridge v2 (target workspace: {TARGET_WORKSPACE})")
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception as e:
+            log(f"Invalid JSON line received: {e}")
+            continue
+
+        method = msg.get("method")
+        req_id = msg.get("id")
+        params = msg.get("params", {})
+
+        if method == "initialize":
+            write_msg(handle_initialize(req_id))
+        elif method == "session/new":
+            write_msg(handle_session_new(req_id, params))
+        elif method == "session/prompt":
+            write_msg(handle_session_prompt(req_id, params))
+        elif method == "session/exit":
+            write_msg(handle_session_exit(req_id, params))
+            break
+        elif method == "permission/request":
+            write_msg(handle_permission_request(req_id, params))
+        else:
+            # Unsupported method
+            if req_id is not None:
+                write_msg({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {method}"
+                    }
+                })
+
+    log("Exiting ACP worker bridge")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.stderr.close()
+    except KeyboardInterrupt:
+        sys.exit(0)

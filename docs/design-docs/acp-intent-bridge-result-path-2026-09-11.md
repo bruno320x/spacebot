@@ -294,3 +294,29 @@ içeriyor mu; ayrıca Spacebot `worker_runs.result` alanı aynı metni taşıyor
    sonuç geri. `worker_runs.result` gerçek metni içeriyor mu?
 4. Başarılıysa `docs/design-docs/fork-upstream-plan.md`'ye kalem olarak işle ve
    commit et.
+
+---
+
+## 10. Uygulama durumu (2026-09-14)
+
+**v2 köprü yazıldı ve test edildi** — `scripts/acp/spacebot-acp-worker`
+(kurulum: `~/.local/bin/spacebot-acp-worker`, önceki sürüm
+`spacebot-acp-worker.v1-20260914` olarak saklandı).
+
+| Tasarım kararı | Uygulama |
+|---|---|
+| §4 A+B (ucuz `agent.get` bitiş kontrolü + seyrek `event.query` olay akışı) | ✅ 2 sn poll, `agent.get` önce |
+| Cursor: routing öncesi en yeni `timestamp` | ✅ Turun kendi olayları dışını görmez |
+| En-yeniden-eskiye sayfalama riski (§4 dikkat) | ✅ `id` görüldü mü kümesi (`seen_ids`) + `cursor` ilerletme |
+| Nabız (satır başına 600 sn parent timeout'a karşı) | ✅ 60 sn'de bir non-text `intent_heartbeat` |
+| Sonuç kirletmeme (parent tüm text content'leri biriktiriyor) | ✅ Ara update'ler `intent_progress`/`intent_heartbeat`; **tek** `completed` update `text` taşır |
+| Bütçe sonunda hata, sessiz "completed" yok | ✅ `INTENT_RESULT_BUDGET_SECS=900` > 600; aşım → JSON-RPC error |
+| Socket yok / sendMessage reddi / `failed` durumu | ✅ Hepsi açık hata |
+
+**Test:** `scripts/acp/test_spacebot_acp_worker.py` — sahte intentd (gerçek UNIX
+socket) üzerinde 8 senaryo; **8/8 yeşil**. Red adımı doğrulandı: 6 senaryo eski
+v1 script'e karşı gerçekten başarısız oldu (yönlendirme onayı sonuç gibi dönüyordu).
+
+**Henüz yapılmadı (§9'un canlı adımları):** intentd kapalı olduğu için gerçek
+daemon'a karşı `--test` doğrulaması ve `worker_runs.result` uçtan uca kontrolü
+— J0'ın ilk çalıştırma adımında yapılacak.
