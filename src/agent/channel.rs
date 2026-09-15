@@ -37,8 +37,7 @@ use rig::completion::CompletionModel;
 use rig::message::UserContent;
 use rig::one_or_many::OneOrMany;
 use rig::tool::server::ToolServer;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
 use tokio::sync::broadcast;
 use tokio::sync::{RwLock, mpsc};
@@ -66,6 +65,7 @@ struct PendingResult {
 }
 
 const EVENT_LAG_WARNING_INTERVAL_SECS: u64 = 30;
+const RETRIGGER_RELAY_RETRY_LIMIT: u64 = 1;
 /// Ceiling on messages restored into live history when a channel starts. The
 /// compactor and chronicler trim from there under their own thresholds.
 const HYDRATE_MESSAGE_LIMIT: i64 = 200;
@@ -420,6 +420,7 @@ struct AgentTurnResult {
     result: std::result::Result<String, rig::completion::PromptError>,
     skip_flag: crate::tools::SkipFlag,
     replied_flag: crate::tools::RepliedFlag,
+    delivered_flag: crate::tools::DeliveredFlag,
     retrigger_reply_preserved: bool,
     reply_text: Option<String>,
 }
@@ -1149,6 +1150,9 @@ pub struct Channel {
     /// Background process results waiting to be embedded in the next retrigger.
     /// Accumulated during the debounce window and drained when the retrigger fires.
     pending_results: Vec<PendingResult>,
+    /// A result relay that exhausted automatic retries and waits for the next
+    /// real user turn before another bounded attempt.
+    deferred_retriggers: VecDeque<InboundMessage>,
     consumed_worker_outcomes: HashMap<WorkerId, i64>,
     /// Optional send_agent_message tool (only when agent has active links).
     send_agent_message_tool: Option<crate::tools::SendAgentMessageTool>,
@@ -1395,6 +1399,7 @@ impl Channel {
             pending_retrigger_metadata: HashMap::new(),
             retrigger_deadline: None,
             pending_results: Vec::new(),
+            deferred_retriggers: VecDeque::new(),
             consumed_worker_outcomes: HashMap::new(),
             send_agent_message_tool,
             backfill_transcript: None,
@@ -1770,7 +1775,7 @@ impl Channel {
     }
 
     fn suppress_plaintext_fallback(&self) -> bool {
-        matches!(self.current_adapter(), Some("email"))
+        self.state.kind == ChannelKind::Cron || matches!(self.current_adapter(), Some("email"))
     }
 
     async fn track_participant_from_message(&self, message: &InboundMessage) {
@@ -1809,6 +1814,7 @@ impl Channel {
             Some(target) => RoutedResponse {
                 response,
                 target: target.clone(),
+                delivery_receipt: None,
             },
             None => {
                 tracing::warn!(
@@ -1818,10 +1824,24 @@ impl Channel {
                 RoutedResponse {
                     response,
                     target: InboundMessage::empty(),
+                    delivery_receipt: None,
                 }
             }
         };
         self.response_tx.send(routed).await
+    }
+
+    async fn send_routed_confirmed(
+        &self,
+        response: OutboundResponse,
+    ) -> std::result::Result<(), crate::RoutedDeliveryError> {
+        let target = self
+            .current_inbound
+            .clone()
+            .unwrap_or_else(InboundMessage::empty);
+        RoutedSender::new(self.response_tx.clone(), target)
+            .send_confirmed(response)
+            .await
     }
 
     /// Drain accumulated channel tool calls from ApiState and serialize as JSON.
@@ -2800,13 +2820,14 @@ impl Channel {
             )
             .await?;
 
-        self.handle_agent_result(
-            turn_result.result,
-            &turn_result.skip_flag,
-            &turn_result.replied_flag,
-            false,
-        )
-        .await;
+        let _ = self
+            .handle_agent_result(
+                turn_result.result,
+                &turn_result.skip_flag,
+                &turn_result.replied_flag,
+                false,
+            )
+            .await;
         if turn_result
             .replied_flag
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -3161,13 +3182,25 @@ impl Channel {
             )
             .await?;
 
-        self.handle_agent_result(
-            turn_result.result,
-            &turn_result.skip_flag,
-            &turn_result.replied_flag,
-            is_retrigger,
-        )
-        .await;
+        let delivered_text = self
+            .handle_agent_result(
+                turn_result.result,
+                &turn_result.skip_flag,
+                &turn_result.replied_flag,
+                is_retrigger,
+            )
+            .await;
+
+        if is_retrigger && let Some(text) = delivered_text.as_ref() {
+            self.state
+                .history
+                .write()
+                .await
+                .push(rig::message::Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(rig::message::AssistantContent::text(text)),
+                });
+        }
 
         if turn_result
             .replied_flag
@@ -3202,75 +3235,77 @@ impl Channel {
             .await;
         }
 
-        // After retrigger turns, persist a fallback summary only when we don't
-        // already have the LLM's actual relay text in history.
-        //
-        // PromptCancelled + reply tool is now handled in apply_history_after_turn:
-        // it extracts the reply content from tool args and records that exact
-        // assistant message (while dropping scaffolding). In that common success
-        // path, we skip summary injection to avoid replacing user-visible wording
-        // with raw worker output.
-        //
-        // If relay failed (replied=false), or if we couldn't extract a clean
-        // reply content payload, this fallback preserves a compact background
-        // result record for the next user turn.
         if is_retrigger {
             let replied = turn_result
                 .replied_flag
                 .load(std::sync::atomic::Ordering::Relaxed);
+            let delivered = replied
+                || turn_result
+                    .delivered_flag
+                    .load(std::sync::atomic::Ordering::Acquire)
+                || delivered_text.is_some();
             let is_autonomy = self.state.kind == ChannelKind::Autonomy;
-            if replied && turn_result.retrigger_reply_preserved {
+            if delivered && turn_result.retrigger_reply_preserved {
                 tracing::debug!(
                     channel_id = %self.id,
                     "skipping retrigger summary injection; relay reply already preserved"
                 );
-            } else {
-                // Extract the result summaries from the metadata we attached in
-                // flush_pending_retrigger, so we record only the substance (not
-                // the retrigger instructions/template scaffolding).
+            } else if is_autonomy {
                 let summary = message
                     .metadata
                     .get("retrigger_result_summary")
                     .and_then(|v| v.as_str())
                     .unwrap_or("[background work completed]");
-
-                let record = if replied {
-                    summary.to_string()
-                } else if is_autonomy {
-                    // Autonomy channels have no reply tool, so a retrigger turn
-                    // never "replies". The results were already presented as
-                    // run context in the retrigger message; record a compact
-                    // copy so they survive into the run's history without the
-                    // user-relay framing.
-                    tracing::debug!(
-                        channel_id = %self.id,
-                        "autonomy retrigger produced no reply; results preserved in history as run context"
-                    );
-                    format!("[background process results]\n{summary}")
-                } else {
-                    tracing::warn!(
-                        channel_id = %self.id,
-                        "retrigger relay failed, preserving result in history for next turn"
-                    );
-                    format!(
-                        "[background work completed but relay to user failed — include this in your next response]\n{summary}"
-                    )
-                };
-
+                let record = format!("[background process results]\n{summary}");
                 let mut history = self.state.history.write().await;
-                // Replace the synthetic bridge message (if present) with the summary
-                // to avoid consecutive assistant messages in history.
                 let replaced = pop_retrigger_bridge_message(&mut history);
                 tracing::debug!(
                     channel_id = %self.id,
                     replaced_bridge = replaced,
-                    replied,
-                    "injecting retrigger summary into history"
+                    "preserving autonomy process results in run history"
                 );
                 history.push(rig::message::Message::Assistant {
                     id: None,
                     content: OneOrMany::one(rig::message::AssistantContent::text(record)),
                 });
+            } else if !delivered {
+                let relay_attempt = message
+                    .metadata
+                    .get("retrigger_relay_attempt")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                if relay_attempt < RETRIGGER_RELAY_RETRY_LIMIT {
+                    let mut retry = message.clone();
+                    retry.id = uuid::Uuid::new_v4().to_string();
+                    retry.timestamp = chrono::Utc::now();
+                    retry.metadata.insert(
+                        "retrigger_relay_attempt".to_string(),
+                        serde_json::json!(relay_attempt + 1),
+                    );
+                    if let Err(error) = self.self_tx.try_send(retry) {
+                        tracing::warn!(
+                            channel_id = %self.id,
+                            %error,
+                            "failed to queue background result relay retry"
+                        );
+                        self.deferred_retriggers.push_back(message.clone());
+                        self.notify_retrigger_delivery_failure().await;
+                    } else {
+                        tracing::warn!(
+                            channel_id = %self.id,
+                            attempt = relay_attempt + 1,
+                            "background result relay failed; queued bounded retry"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        channel_id = %self.id,
+                        attempts = relay_attempt + 1,
+                        "background result relay retries exhausted"
+                    );
+                    self.deferred_retriggers.push_back(message.clone());
+                    self.notify_retrigger_delivery_failure().await;
+                }
             }
 
             // Mark the completed items as relayed in the status block so their
@@ -3281,7 +3316,7 @@ impl Channel {
             // now recorded in history (either via the reply path or the record
             // above), so marking them prevents the same results being
             // re-injected on every subsequent turn of the run.
-            if (replied || is_autonomy)
+            if (delivered || is_autonomy)
                 && let Some(ids) = message
                     .metadata
                     .get("retrigger_process_ids")
@@ -3305,6 +3340,7 @@ impl Channel {
             self.message_count += 1;
             self.check_memory_persistence().await;
             self.claim_home_channel_if_unset().await;
+            self.queue_deferred_retrigger();
         }
 
         Ok(())
@@ -3762,10 +3798,12 @@ impl Channel {
     ) -> Result<AgentTurnResult> {
         let skip_flag = crate::tools::new_skip_flag();
         let replied_flag = crate::tools::new_replied_flag();
+        let delivered_flag = crate::tools::new_delivered_flag();
         // Autonomy runs never talk to users — no reply tool. Output goes to
         // task state, working memory, and autonomy_complete.
         let allow_direct_reply =
-            self.state.kind != ChannelKind::Autonomy && !self.suppress_plaintext_fallback();
+            self.state.kind == ChannelKind::User && !self.suppress_plaintext_fallback();
+        let allow_ask = allow_direct_reply && !is_retrigger;
 
         // Set the originating channel on the delegation tool so task completion
         // notifications route back to this conversation.
@@ -3815,9 +3853,11 @@ impl Channel {
                         conversation_id,
                         skip_flag.clone(),
                         replied_flag.clone(),
+                        delivered_flag.clone(),
                         self.deps.cron_tool.clone(),
                         send_agent_message_tool,
                         allow_direct_reply,
+                        allow_ask,
                         adapter.map(|s| s.to_string()),
                         slack_thread_ts.as_deref(),
                         self.state.cron_outcome.clone(),
@@ -3839,9 +3879,11 @@ impl Channel {
                         conversation_id,
                         skip_flag.clone(),
                         replied_flag.clone(),
+                        delivered_flag.clone(),
                         self.deps.cron_tool.clone(),
                         send_agent_message_tool,
                         allow_direct_reply,
+                        allow_ask,
                         adapter.map(|s| s.to_string()),
                         slack_thread_ts.as_deref(),
                         self.state.cron_outcome.clone(),
@@ -4092,12 +4134,14 @@ impl Channel {
             result,
             skip_flag,
             replied_flag,
+            delivered_flag,
             retrigger_reply_preserved: applied_history.retrigger_reply_preserved,
             reply_text: applied_history.reply_text,
         })
     }
 
     /// Send outbound text and record send metrics.
+<<<<<<< ours
     /// Best-effort duplicate guard for retrigger fallback relays.
     ///
     /// OpenCode and multi-worker jobs can surface the same completed result
@@ -4146,6 +4190,13 @@ impl Channel {
 
     async fn send_outbound_text(&self, text: String, error_context: &str) {
         match self.send_routed(OutboundResponse::Text(text)).await {
+=======
+    async fn send_outbound_text(&self, text: String, error_context: &str) -> bool {
+        match self
+            .send_routed_confirmed(OutboundResponse::Text(text))
+            .await
+        {
+>>>>>>> theirs
             Ok(()) => {
                 #[cfg(feature = "metrics")]
                 {
@@ -4155,6 +4206,7 @@ impl Channel {
                         .with_label_values(&[&self.deps.agent_id, channel_type])
                         .inc();
                 }
+                true
             }
             Err(error) => {
                 #[cfg(feature = "metrics")]
@@ -4166,6 +4218,44 @@ impl Channel {
                         .inc();
                 }
                 tracing::error!(%error, channel_id = %self.id, "{error_context}");
+                false
+            }
+        }
+    }
+
+    async fn notify_retrigger_delivery_failure(&self) {
+        let text = "Background work finished, but I couldn't deliver its result. The result is still pending; ask me to retry.";
+        if self
+            .send_outbound_text(text.to_string(), "failed to send background result notice")
+            .await
+        {
+            self.state
+                .conversation_logger
+                .log_bot_message(&self.state.channel_id, text);
+        }
+    }
+
+    fn queue_deferred_retrigger(&mut self) {
+        let Some(mut message) = self.deferred_retriggers.pop_front() else {
+            return;
+        };
+        message.id = uuid::Uuid::new_v4().to_string();
+        message.timestamp = chrono::Utc::now();
+        message
+            .metadata
+            .insert("retrigger_relay_attempt".to_string(), serde_json::json!(0));
+        match self.self_tx.try_send(message) {
+            Ok(()) => tracing::info!(
+                channel_id = %self.id,
+                "retrying deferred background result after user activity"
+            ),
+            Err(error) => {
+                let message = error.into_inner();
+                tracing::warn!(
+                    channel_id = %self.id,
+                    "failed to queue deferred background result retry"
+                );
+                self.deferred_retriggers.push_front(message);
             }
         }
     }
@@ -4183,7 +4273,8 @@ impl Channel {
         skip_flag: &crate::tools::SkipFlag,
         replied_flag: &crate::tools::RepliedFlag,
         is_retrigger: bool,
-    ) {
+    ) -> Option<String> {
+        let mut delivered_text = None;
         #[cfg(feature = "metrics")]
         let metrics = crate::telemetry::Metrics::global();
         #[cfg(feature = "metrics")]
@@ -4250,6 +4341,7 @@ impl Channel {
                                 if extracted.is_some() {
                                     tracing::warn!(channel_id = %self.id, "extracted reply from malformed tool syntax in retrigger fallback");
                                 }
+<<<<<<< ours
                                 self.state
                                     .conversation_logger
                                     .log_bot_message(&self.state.channel_id, &final_text);
@@ -4263,6 +4355,20 @@ impl Channel {
                                     channel_id = %self.id,
                                     "suppressing duplicate retrigger fallback output; result already relayed"
                                 );
+=======
+                                if self
+                                    .send_outbound_text(
+                                        final_text.clone(),
+                                        "failed to send retrigger fallback reply",
+                                    )
+                                    .await
+                                {
+                                    self.state
+                                        .conversation_logger
+                                        .log_bot_message(&self.state.channel_id, &final_text);
+                                    delivered_text = Some(final_text);
+                                }
+>>>>>>> theirs
                             }
                         }
                     } else {
@@ -4326,6 +4432,7 @@ impl Channel {
                                 source,
                             );
                             if !final_text.is_empty()
+<<<<<<< ours
                                 && !self.is_duplicate_of_recent_assistant(&final_text).await
                             {
                                 if extracted.is_some() {
@@ -4344,6 +4451,19 @@ impl Channel {
                                     channel_id = %self.id,
                                     "suppressing duplicate retrigger fallback output; result already relayed"
                                 );
+=======
+                                && self
+                                    .send_outbound_text(
+                                        final_text.clone(),
+                                        "failed to send retrigger fallback reply",
+                                    )
+                                    .await
+                            {
+                                self.state
+                                    .conversation_logger
+                                    .log_bot_message(&self.state.channel_id, &final_text);
+                                delivered_text = Some(final_text);
+>>>>>>> theirs
                             }
                         }
                     } else {
@@ -4402,8 +4522,15 @@ impl Channel {
                                     Some(self.agent_display_name()),
                                     tool_calls_json,
                                 );
-                            self.send_outbound_text(final_text, "failed to send fallback reply")
-                                .await;
+                            if self
+                                .send_outbound_text(
+                                    final_text.clone(),
+                                    "failed to send fallback reply",
+                                )
+                                .await
+                            {
+                                delivered_text = Some(final_text);
+                            }
                         }
                     }
 
@@ -4438,11 +4565,12 @@ impl Channel {
                     .channel_errors_total
                     .with_label_values(&[metrics_agent_id, metrics_channel_type, "llm_error"])
                     .inc();
-                // Send error to user so they know something went wrong
-                let error_msg = format!("I encountered an error: {}", error);
-                self.send_routed(OutboundResponse::Text(error_msg))
-                    .await
-                    .ok();
+                if !is_retrigger {
+                    let error_msg = format!("I encountered an error: {}", error);
+                    self.send_routed(OutboundResponse::Text(error_msg))
+                        .await
+                        .ok();
+                }
                 tracing::error!(channel_id = %self.id, %error, "channel LLM call failed");
             }
         }
@@ -4451,6 +4579,7 @@ impl Channel {
         self.send_routed(OutboundResponse::Status(crate::StatusUpdate::StopTyping))
             .await
             .ok();
+        delivered_text
     }
 
     /// Handle a process event (branch results, worker completions, status updates).
