@@ -35,7 +35,12 @@ mod skills;
 pub(crate) mod ssh;
 mod state;
 mod system;
+<<<<<<< ours
 pub mod tasks;
+=======
+mod tasks;
+mod teams_package;
+>>>>>>> theirs
 mod tools;
 pub mod usage;
 pub mod wakes;

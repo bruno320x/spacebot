@@ -23,7 +23,8 @@ export type Platform =
 	| "email"
 	| "webhook"
 	| "mattermost"
-	| "signal";
+	| "signal"
+	| "teams";
 
 export interface GlobalSettingsSectionProps {
 	settings: GlobalSettingsResponse | undefined;

@@ -1685,6 +1685,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/messaging/teams/app-package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["download_teams_app_package"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/messaging/toggle": {
         parameters: {
             query?: never;
@@ -4029,6 +4045,9 @@ export interface components {
             signal_http_url?: string | null;
             slack_app_token?: string | null;
             slack_bot_token?: string | null;
+            teams_app_id?: string | null;
+            teams_client_secret?: string | null;
+            teams_tenant_id?: string | null;
             telegram_token?: string | null;
             twitch_client_id?: string | null;
             twitch_client_secret?: string | null;
@@ -4789,6 +4808,7 @@ export interface components {
             /** @enum {string} */
             kind: "agent";
         };
+<<<<<<< ours
         /** @description A chronicle checkpoint hit returned alongside memory results. */
         SessionSearchHit: {
             channel_id: string;
@@ -4799,6 +4819,8 @@ export interface components {
             similarity: number;
             title: string;
         };
+=======
+>>>>>>> theirs
         SetChannelArchiveRequest: {
             agent_id: string;
             archived: boolean;
@@ -5512,6 +5534,7 @@ export interface components {
             fired: boolean;
             message: string;
         };
+<<<<<<< ours
         WakeItem: {
             builtin: boolean;
             enabled: boolean;
@@ -5541,6 +5564,8 @@ export interface components {
         WakesResponse: {
             wakes: components["schemas"]["WakeItem"][];
         };
+=======
+>>>>>>> theirs
         WarmupSection: {
             eager_embedding_load: boolean;
             enabled: boolean;
@@ -7967,7 +7992,40 @@ export interface operations {
             };
         };
     };
+<<<<<<< ours
     get_warmup_status: {
+=======
+    wake_agent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent ID */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WakeAgentResponse"];
+                };
+            };
+            /** @description Wake manager not running */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_bindings: {
+>>>>>>> theirs
         parameters: {
             query?: {
                 /** @description Optional agent ID to get status for a specific agent */
@@ -9926,6 +9984,43 @@ export interface operations {
                 };
             };
             /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    download_teams_app_package: {
+        parameters: {
+            query: {
+                /** @description Bot App (client) ID */
+                app_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Teams app package (zip) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": unknown;
+                };
+            };
+            /** @description Missing or invalid app_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Failed to build package */
             500: {
                 headers: {
                     [name: string]: unknown;

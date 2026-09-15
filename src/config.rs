@@ -16,7 +16,7 @@ pub use load::set_resolve_secrets_store;
 pub use onboarding::run_onboarding;
 pub use permissions::{
     DiscordPermissions, MattermostPermissions, SignalPermissions, SlackPermissions,
-    TelegramPermissions, TwitchPermissions,
+    TeamsPermissions, TelegramPermissions, TwitchPermissions,
 };
 pub(crate) use providers::default_provider_config;
 pub use runtime::RuntimeConfig;
@@ -1670,6 +1670,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![
             Binding {
@@ -1723,6 +1724,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![Binding {
             authority: None,
@@ -1793,6 +1795,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![Binding {
             authority: None,
@@ -1839,6 +1842,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         // Binding targets default adapter, but no default credentials exist
         let bindings = vec![Binding {
@@ -1886,6 +1890,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![
             // Valid: default adapter with credentials
@@ -1971,6 +1976,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![Binding {
             authority: None,
@@ -2005,6 +2011,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![Binding {
             authority: None,
@@ -2050,6 +2057,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![Binding {
             authority: None,
@@ -2090,6 +2098,7 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+            teams: None,
         };
         let bindings = vec![Binding {
             authority: None,

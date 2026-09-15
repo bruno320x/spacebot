@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use super::{
     Binding, Config, DiscordPermissions, MattermostPermissions, RuntimeConfig, SignalPermissions,
-    SlackPermissions, TelegramPermissions, TwitchPermissions, binding_runtime_adapter_key,
+    SlackPermissions, TeamsPermissions, TelegramPermissions, TwitchPermissions,
+    binding_runtime_adapter_key,
 };
 use sha2::{Digest, Sha256};
 
@@ -45,6 +46,7 @@ pub fn spawn_file_watcher(
     twitch_permissions: Option<Arc<arc_swap::ArcSwap<TwitchPermissions>>>,
     mattermost_permissions: Option<Arc<arc_swap::ArcSwap<MattermostPermissions>>>,
     signal_permissions: Option<Arc<arc_swap::ArcSwap<SignalPermissions>>>,
+    teams_permissions: Option<Arc<arc_swap::ArcSwap<TeamsPermissions>>>,
     bindings: Arc<arc_swap::ArcSwap<Vec<Binding>>>,
     authority_defaults: Arc<arc_swap::ArcSwap<crate::commands::access::AdapterAuthorityDefaults>>,
     messaging_manager: Option<Arc<crate::messaging::MessagingManager>>,
@@ -289,8 +291,20 @@ pub fn spawn_file_watcher(
                     tracing::info!("signal permissions reloaded");
                 }
 
+<<<<<<< ours
                 // Reconcile adapter runtime state with the new config: start
                 // newly enabled adapters, stop removed ones, restart changed ones.
+=======
+                if let Some(ref perms) = teams_permissions
+                    && let Some(teams_config) = &config.messaging.teams
+                {
+                    let new_perms = TeamsPermissions::from_config(teams_config, &config.bindings);
+                    perms.store(Arc::new(new_perms));
+                    tracing::info!("teams permissions reloaded");
+                }
+
+                // Hot-start adapters that are newly enabled in the config
+>>>>>>> theirs
                 if let Some(ref manager) = messaging_manager {
                     let rt = tokio::runtime::Handle::current();
                     let manager = manager.clone();
@@ -301,6 +315,7 @@ pub fn spawn_file_watcher(
                     let twitch_permissions = twitch_permissions.clone();
                     let mattermost_permissions = mattermost_permissions.clone();
                     let signal_permissions = signal_permissions.clone();
+                    let teams_permissions = teams_permissions.clone();
                     let instance_dir = instance_dir.clone();
 
                     rt.spawn(async move {
@@ -323,6 +338,121 @@ pub fn spawn_file_watcher(
                                 tracing::error!(%error, "failed to build desired messaging adapters from config change");
                             }
                         }
+<<<<<<< ours
+=======
+
+                        // Mattermost: start default + named instances that are enabled and not already running.
+                        if let Some(mattermost_config) = &config.messaging.mattermost
+                            && mattermost_config.enabled {
+                                if !mattermost_config.base_url.is_empty()
+                                    && !mattermost_config.token.is_empty()
+                                    && !manager.has_adapter("mattermost").await
+                                {
+                                    let permissions = match mattermost_permissions {
+                                        Some(ref existing) => existing.clone(),
+                                        None => {
+                                            let permissions = MattermostPermissions::from_config(mattermost_config, &config.bindings);
+                                            Arc::new(arc_swap::ArcSwap::from_pointee(permissions))
+                                        }
+                                    };
+                                    match crate::messaging::mattermost::MattermostAdapter::new(
+                                        "mattermost",
+                                        &mattermost_config.base_url,
+                                        mattermost_config.token.as_str(),
+                                        mattermost_config.team_id.as_deref().map(Arc::from),
+                                        mattermost_config.max_attachment_bytes,
+                                        permissions,
+                                    ) {
+                                        Ok(adapter) => {
+                                            if let Err(error) = manager.register_and_start(adapter).await {
+                                                tracing::error!(%error, "failed to hot-start mattermost adapter from config change");
+                                            }
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(%error, "failed to build mattermost adapter from config change");
+                                        }
+                                    }
+                                }
+
+                                for instance in mattermost_config.instances.iter().filter(|instance| instance.enabled) {
+                                    let runtime_key = binding_runtime_adapter_key(
+                                        "mattermost",
+                                        Some(instance.name.as_str()),
+                                    );
+                                    if manager.has_adapter(runtime_key.as_str()).await {
+                                        continue;
+                                    }
+
+                                    let permissions = Arc::new(arc_swap::ArcSwap::from_pointee(
+                                        MattermostPermissions::from_instance_config(instance, &config.bindings),
+                                    ));
+                                    match crate::messaging::mattermost::MattermostAdapter::new(
+                                        runtime_key,
+                                        &instance.base_url,
+                                        instance.token.as_str(),
+                                        instance.team_id.as_deref().map(Arc::from),
+                                        instance.max_attachment_bytes,
+                                        permissions,
+                                    ) {
+                                        Ok(adapter) => {
+                                            if let Err(error) = manager.register_and_start(adapter).await {
+                                                tracing::error!(%error, adapter = %instance.name, "failed to hot-start named mattermost adapter from config change");
+                                            }
+                                        }
+                                        Err(error) => {
+                                            tracing::error!(%error, adapter = %instance.name, "failed to build named mattermost adapter from config change");
+                                        }
+                                    }
+                                }
+                            }
+
+                        // Teams: start default instance only (single-instance in v1).
+                        if let Some(teams_config) = &config.messaging.teams
+                            && teams_config.enabled
+                            && !teams_config.app_id.is_empty()
+                                && !teams_config.client_secret.is_empty()
+                                && !teams_config.tenant_id.is_empty()
+                                && !manager.has_adapter("teams").await
+                            {
+                                let permissions = match teams_permissions {
+                                    Some(ref existing) => existing.clone(),
+                                    None => {
+                                        let permissions = TeamsPermissions::from_config(teams_config, &config.bindings);
+                                        Arc::new(arc_swap::ArcSwap::from_pointee(permissions))
+                                    }
+                                };
+                                match crate::messaging::teams::build_teams_adapter(
+                                    "teams",
+                                    &teams_config.app_id,
+                                    &teams_config.client_secret,
+                                    &teams_config.tenant_id,
+                                    teams_config.port,
+                                    &teams_config.bind,
+                                    permissions,
+                                    &instance_dir,
+                                ) {
+                                    Ok(adapter) => {
+                                        if let Err(error) = manager.register_and_start(adapter).await {
+                                            tracing::error!(%error, "failed to hot-start teams adapter from config change");
+                                        }
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to build teams adapter from config change");
+                                    }
+                                }
+                            }
+
+                        // Named Teams instances cannot bind their own listener in v1;
+                        // warn on live config edits too (mirrors cold start in main.rs).
+                        if let Some(teams_config) = &config.messaging.teams
+                            && teams_config.instances.iter().any(|i| i.enabled)
+                        {
+                            tracing::warn!(
+                                "Teams v1 supports a single listener per port; named \
+                                 [[messaging.teams.instances]] are NOT started on config reload"
+                            );
+                        }
+>>>>>>> theirs
                     });
                 }
             }
