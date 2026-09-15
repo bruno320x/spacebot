@@ -439,7 +439,14 @@ impl OpenCodeWorker {
                 self.send_status("resumed — waiting for follow-up");
                 self.send_idle();
             } else {
-                // Fresh worker: emit the initial result so the channel can retrigger.
+                self.persist_transcript_snapshot(&event_state).await;
+                self.persist_lifecycle_transition(
+                    crate::conversation::WorkerLifecycle::Running,
+                    crate::conversation::WorkerLifecycle::WaitingForInput,
+                )
+                .await;
+                // Persist the result and waiting lifecycle before notification
+                // so a lagged channel can recover it from durable state.
                 let scrubbed_result = self.scrub_text(&result_text);
                 let scrubbed_result = crate::secrets::scrub::scrub_leaks_with_mode(
                     &scrubbed_result,
@@ -451,13 +458,6 @@ impl OpenCodeWorker {
                     channel_id: self.channel_id.clone(),
                     result: scrubbed_result,
                 });
-
-                self.persist_transcript_snapshot(&event_state).await;
-                self.persist_lifecycle_transition(
-                    crate::conversation::WorkerLifecycle::Running,
-                    crate::conversation::WorkerLifecycle::WaitingForInput,
-                )
-                .await;
                 self.send_status("waiting for follow-up");
                 self.send_idle();
             }
@@ -498,9 +498,13 @@ impl OpenCodeWorker {
                     .await
                 {
                     Ok(_) => {
-                        // Emit follow-up result so the channel can retrigger
-                        // and relay this to the user — same as initial result.
                         let follow_up_text = event_state.last_text.clone();
+                        self.persist_transcript_snapshot(&event_state).await;
+                        self.persist_lifecycle_transition(
+                            crate::conversation::WorkerLifecycle::Running,
+                            crate::conversation::WorkerLifecycle::WaitingForInput,
+                        )
+                        .await;
                         if !follow_up_text.is_empty() {
                             let scrubbed = self.scrub_text(&follow_up_text);
                             let scrubbed = crate::secrets::scrub::scrub_leaks_with_mode(
@@ -514,12 +518,6 @@ impl OpenCodeWorker {
                                 result: scrubbed,
                             });
                         }
-                        self.persist_transcript_snapshot(&event_state).await;
-                        self.persist_lifecycle_transition(
-                            crate::conversation::WorkerLifecycle::Running,
-                            crate::conversation::WorkerLifecycle::WaitingForInput,
-                        )
-                        .await;
                         self.send_status("waiting for follow-up");
                         self.send_idle();
                     }
