@@ -586,6 +586,7 @@ impl ProjectManageTool {
             .branch
             .ok_or_else(|| ProjectManageError("'branch' is required for create_worktree".into()))?;
 
+<<<<<<< ours
         let provisioned = crate::projects::provision_worktree(
             &self.project_store,
             &project_id,
@@ -596,6 +597,94 @@ impl ProjectManageTool {
         )
         .await
         .map_err(|error| ProjectManageError(format!("{error:#}")))?;
+=======
+        let project = self
+            .project_store
+            .get_project(&self.agent_id, &project_id)
+            .await
+            .map_err(|error| ProjectManageError(format!("failed to get project: {error}")))?
+            .ok_or_else(|| ProjectManageError(format!("project not found: {project_id}")))?;
+
+        let repo = self
+            .project_store
+            .get_repo(&repo_id)
+            .await
+            .map_err(|error| ProjectManageError(format!("failed to get repo: {error}")))?
+            .ok_or_else(|| ProjectManageError(format!("repo not found: {repo_id}")))?;
+
+        // Verify the repo belongs to this project.
+        if repo.project_id != project_id {
+            return Ok(ProjectManageOutput {
+                success: false,
+                action: "create_worktree".to_string(),
+                message: format!("repo '{repo_id}' does not belong to project '{project_id}'"),
+                data: None,
+            });
+        }
+
+        let worktree_dir_name = args
+            .worktree_name
+            .unwrap_or_else(|| branch.replace('/', "-"));
+
+        // Sanitize the worktree name — must be a single path segment, no traversal.
+        if worktree_dir_name.is_empty()
+            || worktree_dir_name.contains('/')
+            || worktree_dir_name.contains('\\')
+            || worktree_dir_name == ".."
+            || worktree_dir_name == "."
+        {
+            return Ok(ProjectManageOutput {
+                success: false,
+                action: "create_worktree".to_string(),
+                message: format!(
+                    "invalid worktree name '{worktree_dir_name}': must be a single directory name"
+                ),
+                data: None,
+            });
+        }
+
+        let root = Path::new(&project.root_path);
+        let repo_abs_path = root.join(&repo.path);
+        let is_single_repo = repo.path == ".";
+
+        // For multi-repo projects, place them inside the project root,
+        // prefixed with `.worktrees/repo_name-worktree_name` to avoid conflicts.
+        let (worktree_abs_path, worktree_db_path) = if is_single_repo {
+            let parent = root.parent().ok_or_else(|| {
+                ProjectManageError("single-repo project root has no parent directory".into())
+            })?;
+            (
+                parent.join(&worktree_dir_name),
+                format!("../{worktree_dir_name}"),
+            )
+        } else {
+            // Include repo name in the worktree directory name to avoid conflicts
+            // with other repos or their worktrees in a multi-repo project.
+            let dir_name = format!("{}-{}", repo.name, worktree_dir_name);
+            (root.join(&dir_name), dir_name)
+        };
+
+        // Create the git worktree (branch from HEAD of the repo)
+        git::create_worktree(&repo_abs_path, &worktree_abs_path, &branch, None)
+            .await
+            .map_err(|error| ProjectManageError(format!("git worktree add failed: {error}")))?;
+
+        // Register in the database
+        let worktree = self
+            .project_store
+            .create_worktree(CreateWorktreeInput {
+                project_id: project_id.clone(),
+                repo_id: repo_id.clone(),
+                name: worktree_dir_name.clone(),
+                path: worktree_db_path,
+                branch: branch.clone(),
+                created_by: "agent".to_string(),
+            })
+            .await
+            .map_err(|error| {
+                ProjectManageError(format!("failed to register worktree in database: {error}"))
+            })?;
+>>>>>>> theirs
 
         Ok(ProjectManageOutput {
             success: true,
