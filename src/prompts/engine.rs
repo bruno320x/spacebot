@@ -6,6 +6,16 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub const SYSTEM_PROMPT_CACHE_BOUNDARY: &str = "<!-- spacebot-system-prompt-cache-boundary -->";
+
+pub fn split_system_prompt_cache_boundary(prompt: &str) -> Option<(&str, &str)> {
+    prompt.split_once(SYSTEM_PROMPT_CACHE_BOUNDARY)
+}
+
+pub fn strip_system_prompt_cache_boundary(prompt: &str) -> String {
+    prompt.replace(SYSTEM_PROMPT_CACHE_BOUNDARY, "")
+}
+
 /// A completed background process result, passed to the retrigger template.
 #[derive(Clone, Debug, Serialize)]
 pub struct RetriggerResult {
@@ -107,6 +117,7 @@ pub struct ChannelPromptInputs {
     pub channel_activity_map: Option<String>,
     pub participant_context: Option<String>,
     pub active_goals: Option<String>,
+    pub active_recall_context: Option<String>,
     pub execution_mode: String,
     pub authority: String,
 }
@@ -130,6 +141,7 @@ impl ChannelPromptInputs {
             .text("channel_activity_map", self.channel_activity_map)
             .text("participant_context", self.participant_context)
             .text("active_goals", self.active_goals)
+            .text("active_recall_context", self.active_recall_context)
             .text("execution_mode", Some(self.execution_mode))
             .text("authority", Some(self.authority))
             .inline("agent_links", self.agent_links)
@@ -196,6 +208,7 @@ impl PromptEngine {
             "memory_persistence",
             crate::prompts::text::get("memory_persistence"),
         )?;
+        env.add_template("active_recall", crate::prompts::text::get("active_recall"))?;
         env.add_template("ingestion", crate::prompts::text::get("ingestion"))?;
         env.add_template("cortex_chat", crate::prompts::text::get("cortex_chat"))?;
         env.add_template(
@@ -1188,7 +1201,10 @@ pub struct ProjectWorktreeContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChannelPromptInputs, PromptEngine};
+    use super::{
+        ChannelPromptInputs, PromptEngine, split_system_prompt_cache_boundary,
+        strip_system_prompt_cache_boundary,
+    };
     use crate::config::ToolUseEnforcement;
 
     /// A channel prompt with only the always-present fragments filled in.
@@ -1202,6 +1218,52 @@ mod tests {
                 .unwrap_or_default(),
             ..ChannelPromptInputs::default()
         }
+    }
+
+    #[test]
+    fn channel_prompt_cache_boundary_separates_stable_and_volatile_context() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+        let mut inputs = base_inputs(&engine);
+        inputs.worker_capabilities = "## Worker Types\n\nStable capabilities.".to_string();
+        inputs.working_memory = Some("## Working Memory\n\nVolatile memory.".to_string());
+        inputs.status_text = Some("Volatile status.".to_string());
+
+        let prompt = engine
+            .render_channel_prompt(inputs)
+            .expect("channel prompt should render")
+            .text;
+        let (stable, volatile) = split_system_prompt_cache_boundary(&prompt)
+            .expect("channel prompt should contain cache boundary");
+
+        assert!(stable.contains("Stable capabilities."));
+        assert!(!stable.contains("Volatile memory."));
+        assert!(!stable.contains("Volatile status."));
+        assert!(volatile.contains("Volatile memory."));
+        assert!(volatile.contains("Volatile status."));
+    }
+
+    #[test]
+    fn cache_boundary_helpers_split_and_strip_marker() {
+        let prompt = format!("stable\n{}\nvolatile", super::SYSTEM_PROMPT_CACHE_BOUNDARY);
+        let (stable, volatile) = split_system_prompt_cache_boundary(&prompt).unwrap();
+        assert_eq!(stable, "stable\n");
+        assert_eq!(volatile, "\nvolatile");
+        assert_eq!(
+            strip_system_prompt_cache_boundary(&prompt),
+            "stable\n\nvolatile"
+        );
+    }
+
+    #[test]
+    fn active_recall_is_below_cache_boundary() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+        let mut inputs = base_inputs(&engine);
+        inputs.active_recall_context = Some("- Prior decision: use SQLite.".to_string());
+        let prompt = engine.render_channel_prompt(inputs).unwrap().text;
+        let (stable, volatile) = split_system_prompt_cache_boundary(&prompt).unwrap();
+        assert!(!stable.contains("Prior decision: use SQLite."));
+        assert!(volatile.contains("## Background Recall (READ-ONLY CONTEXT)"));
+        assert!(volatile.contains("Prior decision: use SQLite."));
     }
 
     /// The block map must describe the prompt that would have been sent
