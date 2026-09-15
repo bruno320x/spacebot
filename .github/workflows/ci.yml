@@ -2,75 +2,149 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "integration/**"
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - "integration/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  check:
-    name: Check & Clippy
+  rust-gate:
+    name: Rust quality gate
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
 
-      # Toolchain pinned to match rust-toolchain.toml — bump both together.
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.97.1
-          components: clippy
+          components: clippy,rustfmt
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: cargo check
-        run: cargo check --all-targets
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.97.1
-          components: rustfmt
-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-
-  test:
-    name: Test
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.97.1
-
-      - uses: Swatinem/rust-cache@v2
-
-      # The memory tests share one embedding model cached at this path;
-      # without the cache every run downloads it from Hugging Face, which
-      # fails intermittently and turns unrelated PRs red.
       - name: Cache embedding model
         uses: actions/cache@v4
         with:
           path: /tmp/spacebot-test-embedding-cache
           key: fastembed-onnx-v1
 
-      - name: cargo test (lib)
-        run: cargo test --lib
+      - name: Project preflight
+        run: ./scripts/preflight.sh --ci
+
+      - name: Full PR gate
+        run: ./scripts/gate-pr.sh --ci
+
+      - name: Check optional metrics feature
+        run: cargo check --all-targets --features metrics
+
+  typegen:
+    name: OpenAPI/typegen consistency
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install interface dependencies
+        working-directory: interface
+        run: bun ci
+
+      - name: Generate OpenAPI schema
+        run: cargo run --bin openapi-spec > /tmp/spacebot-openapi.json
+
+      - name: Verify generated TypeScript bindings
+        run: |
+          cd interface
+          bunx openapi-typescript /tmp/spacebot-openapi.json -o /tmp/spacebot-schema-check.d.ts
+          diff -u src/api/schema.d.ts /tmp/spacebot-schema-check.d.ts
+
+  interface:
+    name: Interface typecheck and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: interface
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install dependencies
+        run: bun ci
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Production build
+        run: bun run build
+
+  docker-build:
+    name: Docker build smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image without publishing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=ci-docker-amd64
+          cache-to: type=gha,mode=max,scope=ci-docker-amd64
+
+  ci-success:
+    name: CI success
+    if: always()
+    needs:
+      - rust-gate
+      - typegen
+      - interface
+      - docker-build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every gate
+        run: |
+          test "${{ needs.rust-gate.result }}" = "success"
+          test "${{ needs.typegen.result }}" = "success"
+          test "${{ needs.interface.result }}" = "success"
+          test "${{ needs.docker-build.result }}" = "success"
