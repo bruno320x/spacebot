@@ -42,16 +42,16 @@ jobs:
       - name: Project preflight
         run: ./scripts/preflight.sh --ci
 
-      - name: Capture full PR gate diagnostics
+      - name: Capture OpenAPI compile diagnostics
         shell: bash
         run: |
           set +e
-          ./scripts/gate-pr.sh --ci > rust-gate.log 2>&1
+          cargo check --bin openapi-spec --message-format=short > rust-gate.log 2>&1
           status=$?
           {
             echo "gate_exit_code=$status"
             echo
-            grep -nE '(^|[^[:alnum:]_])(error(\[[^]]+\])?:|could not compile|test result: FAILED|failures:|FAILED|panicked at)' rust-gate.log || true
+            grep -nE '(^|[^[:alnum:]_])(error(\[[^]]+\])?:|could not compile|FAILED|panicked at)' rust-gate.log || true
           } > rust-errors.log
           tail -n 300 rust-gate.log > rust-tail.log
           exit 0
