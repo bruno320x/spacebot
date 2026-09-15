@@ -69,15 +69,32 @@ jobs:
         continue-on-error: true
         run: cargo test --tests --no-run
 
-      - name: Original full gate
+      - name: Original full gate with trace
         id: original_gate
         continue-on-error: true
-        run: ./scripts/gate-pr.sh --ci
+        shell: bash
+        run: |
+          set +e
+          bash -x ./scripts/gate-pr.sh --ci > /tmp/gate-pr-trace.log 2>&1
+          rc=$?
+          set -e
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          tail -n 200 /tmp/gate-pr-trace.log
+          exit "$rc"
+
+      - name: Upload gate trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-pr-trace
+          path: /tmp/gate-pr-trace.log
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Diagnostic summary
         if: always()
         run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Rust gate baseline diagnostics
 
           | Step | Outcome |
@@ -89,6 +106,7 @@ jobs:
           | cargo test --lib | ${{ steps.lib_tests.outcome }} |
           | cargo test --tests --no-run | ${{ steps.integration_compile.outcome }} |
           | original gate-pr.sh | ${{ steps.original_gate.outcome }} |
+          | original gate exit code | ${{ steps.original_gate.outputs.exit_code }} |
           EOF
 
       - name: Fail if any baseline gate failed
