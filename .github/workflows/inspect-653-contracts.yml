@@ -1,0 +1,29 @@
+name: Inspect 653 Contracts
+
+on:
+  push:
+    branches:
+      - port/upstream-653-agent-worker-registry
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate legacy and incomplete worker contracts
+        shell: bash
+        run: |
+          set -eu
+          echo '=== detached_workers / detached registries ==='
+          rg -n 'detached_workers|detached_worker_registries|register_detached_workers|cancel_detached_worker' src || true
+          echo '=== WorkerTaskControl ==='
+          rg -n 'WorkerTaskControl' src || true
+          echo '=== WorkerInitialResult ==='
+          rg -n 'WorkerInitialResult' src || true
+          echo '=== WorkerPermission ==='
+          rg -n 'WorkerPermission' src/acp src/opencode src/agent || true
+          echo '=== resume_interactive OpenCode ==='
+          rg -n 'resume_interactive\(' src/agent/channel_dispatch.rs src/opencode/worker.rs || true
