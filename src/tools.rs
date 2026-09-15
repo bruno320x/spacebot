@@ -317,6 +317,7 @@ impl ToolCallRegistry {
 #[derive(Debug, Clone)]
 pub enum BranchToolProfile {
     Default,
+    ActiveRecall,
     MemoryPersistence {
         contract_state: Arc<MemoryPersistenceContractState>,
         working_memory: Option<Arc<crate::memory::WorkingMemoryStore>>,
@@ -1085,6 +1086,12 @@ pub fn create_branch_tool_server(
     sandbox: Arc<crate::sandbox::Sandbox>,
     branch_delegation: Option<Arc<BranchDelegationState>>,
 ) -> ToolServerHandle {
+    if matches!(profile, BranchToolProfile::ActiveRecall) {
+        return ToolServer::new()
+            .tool(MemoryRecallTool::new(memory_search))
+            .run();
+    }
+
     let mut memory_save = memory_save_with_events(
         memory_search.clone(),
         agent_id.clone(),
