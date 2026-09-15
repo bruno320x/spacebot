@@ -35,6 +35,23 @@ jobs:
       - name: Apply exact semantic reconciliation
         run: python3 .github/integration/fix-653-compile.py
 
+      - name: Remove stale AgentDeps worker fields from test fixtures
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          needle = "        detached_workers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),\n"
+          changed = []
+          for path in Path("tests").rglob("*.rs"):
+              text = path.read_text()
+              count = text.count(needle)
+              if count:
+                  path.write_text(text.replace(needle, ""))
+                  changed.append((str(path), count))
+          print("Removed stale detached_workers AgentDeps fields:", changed)
+          PY
+
       - name: Format
         run: cargo fmt --all
 
@@ -47,6 +64,7 @@ jobs:
           set -eu
           ! grep -R -n 'WorkerTaskControl' src
           ! grep -R -n 'WorkerInitialResult' src
+          ! grep -R -n 'detached_workers:' tests
           grep -q 'WorkerBackend::Acp' src/agent/process_control.rs
           grep -q 'worker_registration_id: self.callback.registration_id' src/acp/worker.rs
 
@@ -56,7 +74,7 @@ jobs:
           set -eu
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src
+          git add src tests
           if git diff --cached --quiet; then
             echo 'No source changes to commit.'
             exit 0
