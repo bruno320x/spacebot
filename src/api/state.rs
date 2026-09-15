@@ -34,6 +34,12 @@ const MAX_LIVE_TOOL_OUTPUT_BYTES: usize = 50_000;
 const LIVE_TOOL_OUTPUT_REDACTION: &str = "[REDACTED:potential-secret]";
 const MAX_COMPLETED_PROCESS_TOMBSTONES: usize = 4_096;
 
+pub type DetachedWorkerRegistry = Arc<
+    tokio::sync::RwLock<
+        HashMap<crate::WorkerId, crate::agent::channel_dispatch::WorkerTaskControl>,
+    >,
+>;
+
 fn worker_tool_result_status(result: &str) -> ToolResultStatus {
     if result.contains("\"waiting_for_input\":true")
         || result.contains("\"waiting_for_input\": true")
@@ -241,16 +247,7 @@ pub struct ApiState {
     /// Agent-level registries of channel-less (cortex/autonomy) worker
     /// controls, keyed by agent id. Registered when an agent starts; lets the
     /// cancel API reach detached workers no channel owns (#653).
-    pub detached_worker_registries: RwLock<
-        HashMap<
-            String,
-            Arc<
-                tokio::sync::RwLock<
-                    HashMap<crate::WorkerId, crate::agent::channel_dispatch::WorkerTaskControl>,
-                >,
-            >,
-        >,
-    >,
+    pub detached_worker_registries: RwLock<HashMap<String, DetachedWorkerRegistry>>,
     /// Per-agent cortex chat sessions.
     pub cortex_chat_sessions: arc_swap::ArcSwap<HashMap<String, Arc<CortexChatSession>>>,
     /// Per-agent workspace paths for file tool access.

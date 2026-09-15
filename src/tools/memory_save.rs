@@ -327,26 +327,24 @@ impl Tool for MemorySaveTool {
         // retries stay idempotent and repeated saves cannot duplicate rows.
         // Human anchors are excluded — they resolve through the per-human
         // merge path below.
-        if memory_type != MemoryType::Human {
-            if let Some(existing_id) = store
+        if memory_type != MemoryType::Human
+            && let Some(existing_id) = store
                 .find_exact_duplicate(&args.content, memory_type)
                 .await
                 .map_err(|e| {
                     MemorySaveError(format!("Failed to check for duplicate memory: {e}"))
                 })?
-            {
-                if let Some(contract_state) = &self.contract_state {
-                    contract_state.record_saved_memory_id(existing_id.clone());
-                }
-                return Ok(MemorySaveOutput {
-                    memory_id: existing_id,
-                    success: true,
-                    message:
-                        "memory already exists - reused existing record (no duplicate created)"
-                            .to_string(),
-                    consolidation: None,
-                });
+        {
+            if let Some(contract_state) = &self.contract_state {
+                contract_state.record_saved_memory_id(existing_id.clone());
             }
+            return Ok(MemorySaveOutput {
+                memory_id: existing_id,
+                success: true,
+                message: "memory already exists - reused existing record (no duplicate created)"
+                    .to_string(),
+                consolidation: None,
+            });
         }
 
         // Human anchors (3.1a): a human-typed save resolves through the

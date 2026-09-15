@@ -694,10 +694,10 @@ async fn create_session(
 /// Resolve the omp session storage root (`~/.omp/agent/sessions`), honoring
 /// the `PI_CODING_AGENT_SESSION_DIR` override omp itself supports.
 fn omp_sessions_root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
+        && !dir.is_empty()
+    {
+        return Some(PathBuf::from(dir));
     }
     let home = dirs::home_dir()?;
     Some(home.join(".omp/agent/sessions"))
