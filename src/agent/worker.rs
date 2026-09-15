@@ -954,17 +954,30 @@ impl Worker {
                         });
                 }
 
-                // Fresh worker: persist transcript and signal idle for the first time.
-                // Resumed workers already did this in the preamble above.
-                self.state = WorkerState::WaitingForInput;
-                self.persist_transcript(&compacted_history, &history).await;
-                self.persist_lifecycle_transition(
-                    WorkerLifecycle::Running,
-                    WorkerLifecycle::WaitingForInput,
-                )
-                .await;
-                self.hook.send_status("waiting for input");
-                self.hook.send_worker_idle();
+                // A terminal outcome means the initial task is complete. Do not
+                // advertise the worker as idle or block forever waiting for a
+                // follow-up that can only be released after WorkerComplete.
+                if self.hook.outcome_signaled() {
+                    tracing::info!(
+                        worker_id = %self.id,
+                        "terminal outcome already signaled; skipping follow-up idle state"
+                    );
+                    input_rx.close();
+                    while input_rx.try_recv().is_ok() {}
+                } else {
+                    // Fresh non-terminal interactive worker: persist transcript
+                    // and signal idle for the first time. Resumed workers already
+                    // did this in the preamble above.
+                    self.state = WorkerState::WaitingForInput;
+                    self.persist_transcript(&compacted_history, &history).await;
+                    self.persist_lifecycle_transition(
+                        WorkerLifecycle::Running,
+                        WorkerLifecycle::WaitingForInput,
+                    )
+                    .await;
+                    self.hook.send_status("waiting for input");
+                    self.hook.send_worker_idle();
+                }
             }
 
             while let Some(follow_up) = input_rx.recv().await {
