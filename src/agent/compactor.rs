@@ -1,8 +1,8 @@
 //! Compactor: Programmatic context monitor that triggers background compaction.
 //!
 //! The compactor is NOT an LLM process. It watches a channel's context size and
-//! spawns compaction workers when thresholds are crossed. The LLM work (summarization
-//! + memory extraction) happens in the spawned worker, not here.
+//! spawns compaction workers when thresholds are crossed. The LLM worker only
+//! summarizes older history; memory extraction happens through persistence branches.
 
 use crate::error::Result;
 use crate::hooks::SpacebotHook;
@@ -121,8 +121,8 @@ impl Compactor {
 
     /// Spawn a compaction worker in the background.
     ///
-    /// The worker reads old messages, runs an LLM to produce a summary + extract
-    /// memories, then swaps the summary into the channel's history.
+    /// The worker reads old messages, runs an LLM to produce a summary, then
+    /// swaps the summary into the channel's history.
     async fn spawn_compaction_worker(&self, action: CompactionAction) {
         let mut is_compacting = self.is_compacting.write().await;
         *is_compacting = true;
@@ -250,6 +250,7 @@ impl Compactor {
     }
 }
 
+<<<<<<< ours
 /// The shared fence plus the snapshot a compaction captured when it started.
 ///
 /// Carried together because they are only meaningful as a pair: the snapshot
@@ -262,6 +263,10 @@ struct CompactionGuard {
 
 /// Run the actual compaction: summarize via LLM, extract memories, swap summary into history.
 #[tracing::instrument(skip(deps, compactor_prompt, history, guard), fields(agent_id = %deps.agent_id))]
+=======
+/// Run the actual compaction: summarize via LLM and swap the summary into history.
+#[tracing::instrument(skip(deps, compactor_prompt, history), fields(agent_id = %deps.agent_id))]
+>>>>>>> theirs
 async fn run_compaction(
     deps: &AgentDeps,
     compactor_prompt: &crate::prompts::SegmentedPrompt,
@@ -290,7 +295,7 @@ async fn run_compaction(
     // 2. Build the transcript text for the LLM
     let transcript = render_messages_as_transcript(&removed_messages);
 
-    // 3. Run the compaction LLM to produce summary + extracted memories
+    // 3. Run the compaction LLM to produce a summary
     let routing = deps.runtime_config.routing.load();
     let model_name = match model_override {
         Some(ref m) => m.clone(),
@@ -318,7 +323,6 @@ async fn run_compaction(
             },
         );
 
-    // Give the compaction worker memory_save so it can directly persist memories
     // No tool server — the compactor's sole job is producing a summary.
     // Memory extraction is handled by persistence branches (Phase 5a).
     let agent = AgentBuilder::new(model)

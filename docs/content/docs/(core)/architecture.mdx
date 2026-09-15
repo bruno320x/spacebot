@@ -59,8 +59,13 @@ Five process types, each implemented as a Rig `Agent<SpacebotModel, SpacebotHook
 ├─────────────────────────────────────────────────────────┤
 │                       Cortex                            │
 │  System-level observer. Sees across all channels.       │
+<<<<<<< ours
 │  Coordinates maintenance, circuit breakers, and         │
 │  process-registry cleanup for one agent.                │
+=======
+│  Maintains working memory and knowledge synthesis for   │
+│  channel prompt context.                                │
+>>>>>>> theirs
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -161,7 +166,11 @@ The primary database. Stores everything that benefits from relational queries:
 | `cron_executions` | Execution history for cron jobs |
 | `worker_runs` | Worker execution history with transcripts |
 | `branch_runs` | Branch execution history |
+<<<<<<< ours
 | `cortex_events` | Cortex action log for maintenance and operational coordination |
+=======
+| `cortex_events` | Cortex action log (knowledge synthesis, maintenance) |
+>>>>>>> theirs
 | `cortex_chat_messages` | Persistent admin chat with cortex |
 | `tasks` | Instance-wide task records, plans, dependencies, and execution state |
 | `ingestion_progress` | Chunk-level progress for file ingestion |
@@ -315,7 +324,11 @@ Rig defaults to 0 (single call). Spacebot sets explicit limits per process type:
 | Branch | 10 | A few iterations to think, recall, and conclude. |
 | Worker | 50 | Many iterations for complex tasks. Segmented into 25-turn blocks. |
 | Compactor | 10 | Summarize and extract memories. Bounded. |
+<<<<<<< ours
 | Cortex | 10 | Administrative cortex-chat turns. |
+=======
+| Cortex | 10 | Knowledge synthesis generation. Single-pass with tool calls. |
+>>>>>>> theirs
 
 ## Control API
 
@@ -328,7 +341,11 @@ An embedded Axum HTTP server provides the control API for the dashboard and exte
 | Agents | `/api/agents` | CRUD for agent definitions |
 | Channels | `/api/channels` | Channel listing, history, settings, deletion |
 | Workers | `/api/workers` | Worker status, history, timeline |
+<<<<<<< ours
 | Cortex | `/api/cortex` | Cortex chat and operational inspection |
+=======
+| Cortex | `/api/cortex` | Knowledge synthesis, profile, cortex chat |
+>>>>>>> theirs
 | Memory | `/api/memories` | Memory CRUD, graph queries |
 | Config | `/api/config` | Runtime configuration read/write |
 | Providers | `/api/providers` | LLM provider key management |
@@ -371,8 +388,13 @@ CLI (clap) → parse args
     → Optional startup warmup pass (embedding readiness)
     → Initialize MessagingManager (start all platform adapters)
     → Initialize CronScheduler
+<<<<<<< ours
     → Start Cortex loops (maintenance, associations, health observations)
         → Register agent in active agents map
+=======
+    → Start Cortex loops (warmup, knowledge synthesis, association, ready-task)
+    → Register agent in active agents map
+>>>>>>> theirs
     → Enter main event loop (tokio::select!)
         → Inbound messages → route to Channel instances
         → Agent registration/removal

@@ -9,7 +9,11 @@ Long conversations need bounded context. Spacebot compacts history in the backgr
 
 The compactor is programmatic. It measures channel context after each turn and schedules LLM work only when a summary or chronicle checkpoint is needed.
 
+<<<<<<< ours
 ## Modes
+=======
+The compactor is a programmatic monitor, not an LLM process. It watches a channel's context size (estimated token count) and triggers compaction workers in the background. The channel keeps responding to messages the entire time.
+>>>>>>> theirs
 
 `compaction.mode` selects one of two history strategies.
 
@@ -25,6 +29,7 @@ Rolling mode is appropriate for short-lived conversations. Chronicle mode is for
 Three thresholds protect the context window in either mode.
 
 | Threshold | Default | Action |
+<<<<<<< ours
 | --- | --- | --- |
 | Background | 80% | Schedule normal compaction. |
 | Aggressive | 85% | Compact a larger historical span. |
@@ -37,6 +42,34 @@ Only one compaction runs per channel. Emergency truncation records a marker in t
 In rolling mode, the compaction worker removes an older range from live history, summarizes it, and inserts the summary at the start of the channel history. The worker can also save durable memories before that range leaves the prompt.
 
 The channel does not wait for the worker. It continues using the remaining transcript and receives the new summary on a subsequent turn.
+=======
+|-----------|---------|--------|
+| Background | 80% | Compact oldest 30% of messages |
+| Aggressive | 85% | Compact oldest 50% of messages |
+| Emergency | 95% | Drop oldest 50%, no LLM |
+
+```toml
+[defaults.compaction]
+background_threshold = 0.80
+aggressive_threshold = 0.85
+emergency_threshold = 0.95
+```
+
+Only one compaction runs at a time per channel. If context is already being compacted and a new threshold is hit, it's ignored until the current compaction finishes.
+
+## Background and Aggressive Compaction
+
+These are the normal path. A compaction worker runs in `tokio::spawn` alongside the channel:
+
+1. **Drain** -- Write-lock the channel's history, remove the oldest N messages (30% for background, 50% for aggressive). Release the lock. The channel can immediately continue with the remaining history.
+
+2. **Summarize** -- Build a transcript from the removed messages and run a one-turn Rig agent with `prompts/en/compactor.md.j2` as the system prompt. The agent produces a condensed summary preserving key decisions, active topics, commitments, emotional context, and active tasks. It discards greetings, tool call mechanics, and intermediate reasoning.
+
+3. **Inject summary** -- Write-lock the history again, insert the summary at position 0 as `[Compaction Summary]: ...`. Release the lock. The channel sees this summary on its next turn.
+
+The compaction agent runs with `max_turns(1)`. It has no tool server and does not receive `memory_save`. Durable memory extraction is handled by persistence branches, direct memory tools, ingestion, and cortex workflows.
+
+>>>>>>> theirs
 
 ## Session Chronicles
 
@@ -51,7 +84,29 @@ The prompt renders a bounded chronicle view:
 
 The channel can list its checkpoints, open a summary, or ask a branch to expand a raw transcript range when a checkpoint is insufficient. Portal renders the same checkpoint records inline in its timeline.
 
+<<<<<<< ours
 See [Chronicles](/docs/chronicles) for the user-facing model and operations.
+=======
+Compaction summaries accumulate at the top of the context window. A long-running conversation might have several:
+
+```
+[Compaction Summary]: Earlier today, discussed project architecture...
+[Compaction Summary]: Moved on to auth implementation, decided on JWT...
+[Recent conversation messages]
+```
+
+This gives the channel rolling awareness of what happened without carrying the full raw history. Each summary covers the messages it replaced.
+
+## What the Compaction LLM Sees
+
+The compaction agent receives a rendered transcript of the removed messages. User messages, assistant responses, tool calls, and tool results are formatted as readable text. The agent's system prompt (`prompts/en/compactor.md.j2`) tells it to:
+
+**Preserve:** Key decisions, active topics, commitments, emotional context, active workers/tasks.
+
+**Discard:** Greetings, small talk, tool call details (results matter, not mechanics), intermediate reasoning, repeated information.
+
+It does not extract memories. The compactor's output is only the summary that replaces older history.
+>>>>>>> theirs
 
 ## Configuration
 
@@ -75,7 +130,23 @@ rollup_threshold = 12
 rollup_batch = 8
 ```
 
+<<<<<<< ours
 The `context_window` setting determines the denominator for threshold checks. Set it to the actual context window of the model serving the channel.
+=======
+The `context_window` setting (default 128,000 tokens) determines the denominator for usage calculation. Set this to match your model's actual context window.
+
+## What OpenClaw Does Differently
+
+| Concern | OpenClaw | Spacebot |
+|---------|----------|----------|
+| When it runs | Blocks the session | Background tokio task |
+| User experience | Typing indicator, 20s freeze | No interruption |
+| Summarization | Same session's LLM | Dedicated compaction worker |
+| Memory extraction | Separate pass | Separate persistence paths (branches, tools, ingestion, cortex workflows) |
+| Raw transcript | Lost | Replaced by rolling summaries |
+| Multiple summaries | One summary replaces all | Summaries stack chronologically |
+| Emergency fallback | None (just hope it fits) | Hard truncation at 95% |
+>>>>>>> theirs
 
 ## Implementation
 

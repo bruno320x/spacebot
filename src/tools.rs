@@ -1402,6 +1402,28 @@ pub fn create_worker_tool_server(
     server.run()
 }
 
+<<<<<<< ours
+=======
+/// Create a ToolServer for the cortex process.
+///
+/// Retained for potential future cortex workflows.
+#[allow(dead_code)]
+pub fn create_cortex_tool_server(
+    agent_id: AgentId,
+    memory_event_tx: broadcast::Sender<ProcessEvent>,
+    memory_search: Arc<MemorySearch>,
+) -> ToolServerHandle {
+    ToolServer::new()
+        .tool(memory_save_with_events(
+            memory_search,
+            agent_id,
+            memory_event_tx,
+            None,
+        ))
+        .run()
+}
+
+>>>>>>> theirs
 /// Create a ToolServer for cortex chat sessions.
 ///
 /// Combines branch tools (memory) with worker tools (shell, file) to give

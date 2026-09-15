@@ -1,10 +1,15 @@
 ---
 title: Cortex
+<<<<<<< ours
 description: Per-agent background coordination for maintenance, circuit breakers, and operational state.
+=======
+description: System-level observer that maintains knowledge synthesis, working memory, maintenance, and health.
+>>>>>>> theirs
 ---
 
 # Cortex
 
+<<<<<<< ours
 The cortex is the per-agent background coordinator. It maintains system state that should not belong to a user channel: database hygiene, association work, circuit-breaker observations, and process registry cleanup.
 
 It does not author the knowledge section of every prompt. Channels render a deterministic view of the memory store at turn time. It also does not cancel workers or branches. Each execution path owns its wall-clock timeout and terminal state.
@@ -14,27 +19,178 @@ It does not author the knowledge section of every prompt. Channels render a dete
 ### Memory Maintenance
 
 The cortex schedules maintenance passes over the memory graph:
+=======
+The cortex is the system's awareness of itself. Every other process in Spacebot is focused on a specific job: channels talk to users, branches think, workers execute, and compactors manage context. The cortex watches across the agent and keeps shared context current.
+
+## Knowledge Synthesis
+
+The cortex maintains **knowledge synthesis**, the long-term knowledge layer injected into channel prompts as `## Knowledge Context`. It is a concise briefing synthesized from the memory graph: decisions, preferences, standing policies, active goals, cross-cutting patterns, and known gaps.
+
+Knowledge synthesis is narrower than the old memory bulletin. Identity, recent activity, channel activity, and participant context live in separate prompt layers. The synthesis only carries durable knowledge that should be useful across conversations.
+
+### How It Works
+
+Knowledge synthesis is change-driven:
+
+1. Memory content mutations bump `knowledge_synthesis_version` (create, update, delete, merge; not importance-only changes).
+2. The cortex waits for the debounce window so bursts of memory writes produce one synthesis pass.
+3. The cortex gathers relevant memory data and active task context.
+4. A one-shot LLM synthesis pass renders the `## Knowledge Context` briefing.
+5. The result is cached in `RuntimeConfig::knowledge_synthesis` via `ArcSwap`.
+
+Warmup still makes sure the agent has an initial synthesis before normal dispatch. Older API and status fields may still use `bulletin` names for compatibility, but the prompt's primary memory layer is knowledge synthesis.
+
+This avoids re-synthesizing stable knowledge on a timer. Idle agents do not spend LLM calls rewriting the same context.
+
+### What Channels See
+
+The channel prompt is layered:
+
+```
+## Soul
+[from SOUL.md]
+
+## Identity
+[from IDENTITY.md]
+
+## Role
+[from ROLE.md]
+
+## Working Memory
+[Today, yesterday, and this week's activity]
+
+## Other Channels
+[Recent cross-channel activity]
+
+## Participants
+[Relevant participant summaries and recent activity]
+
+## Knowledge Context
+[Durable long-term context synthesized from the memory graph]
+
+## [Channel prompt follows...]
+```
+
+Raw memory search results stay out of the channel prompt. The channel receives structured context sections and delegates targeted recall to branches when it needs specific detail.
+
+### Why This Replaces MEMORY.md
+
+OpenClaw and systems like it use a `MEMORY.md` file that the LLM manually maintains. That creates several problems:
+
+- The LLM has to decide when to update the file and what to include
+- The file grows unbounded or gets pruned arbitrarily
+- There is no structure, graph, or importance scoring
+- Different conversations fight over the same file
+- A flat document cannot represent a graph of relationships
+
+Spacebot separates storage from presentation. Memories are structured objects in a graph database with typed metadata, associations, and importance scores. Knowledge synthesis is a view of that graph, not the source of truth.
+
+### Knowledge Synthesis vs Branch Recall
+
+These serve different purposes:
+
+**Knowledge synthesis** provides ambient long-term context. It contains durable decisions, preferences, goals, policies, and gaps that any conversation may benefit from knowing. It regenerates when memory content changes.
+
+**Branch recall** provides targeted memory retrieval. When a conversation needs specific information ("what did we decide about the auth system?"), a branch is spawned to search the memory graph with a focused query. Branch recall is on-demand, per-conversation, and returns detailed results.
+
+Knowledge synthesis does not replace recall. It reduces how often recall is needed. Branch recall remains the path for detailed, query-specific memory work.
+
+## Current Responsibilities
+
+Knowledge synthesis is the cortex's most visible responsibility, but it is no longer the only one.
+
+### System Health Monitoring
+
+The cortex already supervises long-running process state:
+
+- **Worker supervision** -- detect hanging workers, apply timeout policies, and clean up detached worker state
+- **Branch supervision** -- detect stale branches and enforce timeout/cancellation policy
+- **Circuit breakers** -- recurring synthesis and maintenance failures back off automatically instead of retrying forever
+
+### Memory Maintenance
+
+The cortex also runs periodic graph hygiene:
+
+- **Decay** -- reduce importance for stale non-identity memories
+- **Prune** -- delete memories that have fallen below the configured importance floor and age threshold
+- **Merge** -- combine near-duplicate memories and rewire graph associations atomically
+
+### Working Memory
+
+The cortex turns process events into temporal context:
+
+- **Intra-day synthesis** -- compresses recent working-memory events into short narrative blocks
+- **Daily summaries** -- rolls yesterday's activity into a single durable summary
+- **Knowledge synthesis refresh** -- regenerates `## Knowledge Context` when the memory graph changes
+
+## Future Responsibilities
+
+The remaining cortex roadmap is about richer cross-system inference, not basic supervision.
+
+### Memory Coherence
+>>>>>>> theirs
 
 - Decay reduces importance for stale, non-identity memories.
 - Pruning removes memories below the configured age and importance floor.
 - Association passes create graph links for related memories.
 - Write-time consolidation handles likely duplicates when memory is saved, before periodic maintenance is needed.
 
+<<<<<<< ours
 ### Health Signals
+=======
+- **Consolidation** -- merge overlapping memories across channels and create cross-channel associations
+- **Observations** -- generate observation-type memories from recurring patterns
+- **Higher-order scoring** -- extend maintenance beyond the current decay/prune/merge pass with richer graph analysis
+
+### The Signal Bus
+
+All processes emit events to a shared broadcast channel. The cortex maps events to high-level signals such as channel started, worker completed, memory saved, compaction triggered, and error occurred. These are buffered in a rolling window for pattern detection.
+
+```
+Channel A emits: WorkerComplete { result: "...", ... }   -> cortex maps to WorkerCompleted signal
+Worker 7 emits: StatusUpdate { status: "stuck on..." }   -> cortex maps to WorkerStatusUpdate signal
+Branch 3 emits: MemorySaved { memory_id: "...", ... }    -> cortex maps to MemorySaved signal
+```
+>>>>>>> theirs
 
 The cortex observes process events and tracks structured tool failures for circuit breakers. It also prunes dead process-control registrations. A circuit breaker records repeated failures without treating an event stream as authority over a worker's lifecycle.
 
 ### Dormant Mode
 
+<<<<<<< ours
 Agents can run with the cortex in `dormant` mode. Periodic loops remain stopped until an external wake requires work. This is useful for fleets where most agents are idle.
+=======
+The cortex is the only singleton in the system per agent. There is one cortex per agent, regardless of how many channels, branches, or workers are running.
+>>>>>>> theirs
 
 ## Memory Context
 
 Channels receive a bounded, deterministic render of the memory store. The render groups the most useful memories by type and includes active goals. It reads current SQLite state directly, so it is fresh on every turn and does not require a synthesis call.
 
+<<<<<<< ours
 Targeted memory retrieval still goes through a branch. A branch can search the graph, inspect supporting context, and return a concise conclusion to the channel.
 
 See [Memory](/docs/memory) for storage and recall behavior.
+=======
+**The cortex** is the system's internal loop. It maintains system health, memory coherence, working memory, and knowledge synthesis. It runs continuously, doesn't produce user-facing output, and isn't user-configured beyond tuning intervals.
+
+## Cortex vs Compactor
+
+**Compactors** are per-channel, programmatic monitors. They watch one channel's context size and trigger compaction workers. They're not LLM processes.
+
+**The cortex** is an LLM-assisted process that sees across all channels. It doesn't manage context size, since that is the compactor's job. It manages knowledge synthesis, supervises background health state, and runs periodic memory maintenance. Deeper memory coherence work still grows from here.
+
+## Interactive Cortex Chat
+
+Spacebot also exposes a direct admin chat session with the cortex. This is intentionally self-referential and diagnostic-focused:
+
+- The system prompt includes embedded architecture context (`AGENTS.md`) and changelog highlights.
+- The prompt includes a live redacted runtime-config snapshot so behavior can be diagnosed against current resolved values.
+- `config_inspect` returns live hot-reloaded config sections on demand.
+- `spacebot_docs` reads embedded Spacebot docs/changelog/AGENTS content directly from the binary.
+
+This makes cortex chat a practical control-room interface for troubleshooting, validation, and operations, not a user-facing conversation mode.
+>>>>>>> theirs
 
 ## Configuration
 
@@ -42,7 +198,30 @@ See [Memory](/docs/memory) for storage and recall behavior.
 [defaults.cortex]
 mode = "active"
 tick_interval_secs = 30
+<<<<<<< ours
 worker_wall_clock_timeout_secs = 600
+=======
+
+# Legacy fallback interval for compatibility surfaces that still use bulletin names.
+bulletin_interval_secs = 3600
+
+# Legacy target word count for compatibility surfaces that still use bulletin names.
+bulletin_max_words = 1500
+
+# Target word count for knowledge synthesis.
+knowledge_synthesis_max_words = 500
+
+# Debounce after memory changes before regenerating knowledge synthesis.
+knowledge_synthesis_debounce_secs = 60
+
+# Worker is considered hanging if no activity for this long.
+worker_timeout_secs = 600
+
+# Branch is considered stale after this duration.
+branch_timeout_secs = 600
+
+# Consecutive failures before circuit breaker trips.
+>>>>>>> theirs
 circuit_breaker_threshold = 3
 maintenance_interval_secs = 3600
 maintenance_decay_rate = 0.05
@@ -54,8 +233,98 @@ consolidation_partition_cap = 200
 consolidation_near_duplicate_threshold = 0.95
 ```
 
+<<<<<<< ours
 `worker_wall_clock_timeout_secs` bounds an individual worker run. Cron jobs can define their own timeout and otherwise use the agent's cron default.
 
 ## Cortex Chat
 
 The dashboard exposes an administrative cortex chat for inspection and operations. It has embedded architecture context, redacted live configuration, and tools for inspecting runtime state. It is not part of a user conversation or the normal autonomy execution path.
+=======
+## Warmup API
+
+Warmup is exposed via the agent API so you can inspect cold/warm state and trigger a re-warm pass on demand.
+
+### `GET /api/agents/warmup?agent_id=...`
+
+Returns warmup status for one agent. If `agent_id` is omitted, returns statuses for all agents.
+
+```json
+{
+  "statuses": [
+    {
+      "agent_id": "main",
+      "status": {
+        "state": "warm",
+        "embedding_ready": true,
+        "last_refresh_unix_ms": 1763935800123,
+        "last_error": null,
+        "bulletin_age_secs": 42
+      }
+    }
+  ]
+}
+```
+
+`bulletin_age_secs` is a compatibility field for the last successful warmup/synthesis refresh.
+
+### `POST /api/agents/warmup`
+
+Triggers a one-shot warmup pass for one agent or all agents.
+
+```json
+{
+  "agent_id": "main",
+  "force": false
+}
+```
+
+- `agent_id` optional: omit to trigger all agents.
+- `force` optional: when `true`, runs the warmup pass even if warmup is disabled in config.
+
+Response:
+
+```json
+{
+  "status": "warming",
+  "forced": false,
+  "accepted_agents": ["main"]
+}
+```
+
+### Warmup States
+
+- `cold` -- warmup is disabled or has not run yet.
+- `warming` -- a warmup pass is currently in progress.
+- `warm` -- latest warmup pass succeeded.
+- `degraded` -- last warmup pass failed; `last_error` contains the reason.
+
+### Readiness Contract
+
+Branch, worker, and cron dispatch paths consult a derived `ready_for_work` signal:
+
+- warmup state is `warm`
+- embedding model is ready
+- an initial knowledge synthesis has been generated
+
+If dispatch arrives while not ready, Spacebot does **not** block the channel or scheduler:
+
+- dispatch continues in degraded-safe mode
+- a forced warmup pass is queued in the background
+- readiness telemetry is emitted
+
+Metrics:
+
+- `spacebot_dispatch_while_cold_count{agent_id,dispatch_type,reason}`
+- `spacebot_warmup_recovery_latency_ms{agent_id,dispatch_type}`
+
+## Failure Modes
+
+**What if knowledge synthesis fails?**
+The previous synthesis is preserved. Channels keep operating with the last successfully generated knowledge context. If synthesis has never succeeded, channels run without that section. The system still works, but with less ambient long-term context.
+
+**What if the cortex crashes?**
+The system keeps running. Channels still talk to users, branches still think, workers still execute. The last knowledge synthesis remains in `RuntimeConfig`. On restart, warmup regenerates it.
+
+**What if the memory graph is empty?**
+The cortex stores an empty knowledge synthesis. This is the normal state for a new agent. As memories accumulate through conversation, ingestion, branches, or cortex work, later synthesis passes have material to use.
+>>>>>>> theirs

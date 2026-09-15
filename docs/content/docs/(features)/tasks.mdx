@@ -60,7 +60,64 @@ Tasks created by autonomous deliberation default to `pending_approval`. Operator
 
 ## Operator Workflows
 
+<<<<<<< ours
 The CLI covers the common task lifecycle:
+=======
+Arbitrary key-value pairs stored as a JSON object. Used for linking to external resources.
+
+```json
+{
+  "github_issue": "https://github.com/org/repo/issues/123",
+  "estimated_effort": "small",
+  "worker_type": "opencode",
+  "skill": "rust-dev",
+  "notes": "Depends on the auth refactor landing first"
+}
+```
+
+No enforced schema. The UI renders known keys with special formatting (e.g., GitHub links become clickable) and displays unknown keys as plain key-value pairs.
+
+## Task Numbering
+
+Per-agent, monotonically increasing. The next number is `MAX(task_number) + 1` within the agent's task table. Tasks are referenced as `#1`, `#42`, etc. Numbers are never reused — deleting task `#5` doesn't free up the number.
+
+## Execution
+
+### Cortex Ready-Task Loop
+
+The primary execution path. A background loop runs every `cortex.tick_interval_secs` (default 30 seconds):
+
+1. **Claim** — Atomically finds the oldest `ready` task with the highest priority and moves it to `in_progress`
+2. **Build prompt** — Renders the worker system prompt with the task title, description, and subtask checklist
+3. **Spawn worker** — Creates a new worker with full tool access (shell, file, exec, browser)
+4. **Bind** — Sets `worker_id` on the task, linking it to the executing worker
+5. **Execute** — The worker runs its loop, using subtasks as an execution plan
+6. **Complete** — On success, the task moves to `done` with `completed_at` set. On failure, the task moves back to `ready` with `worker_id` cleared, so it gets re-queued for another attempt
+
+Worker success/failure is determined by whether `worker.run()` returns `Ok` or `Err`. The cortex doesn't evaluate the quality of the work — a worker that completes without errors is considered successful.
+
+### API Execute Endpoint
+
+The `/api/agents/tasks/:number/execute` endpoint moves a task to `ready` (if it's in `backlog` or `pending_approval`), letting the cortex loop pick it up. Tasks already in `ready` or `in_progress` are returned as-is.
+
+This means execution always flows through the cortex — the API doesn't spawn workers directly.
+
+### Worker Scope
+
+Workers executing a task get a restricted version of the `task_update` tool. They can only:
+
+- Update subtasks (mark complete, replace the checklist)
+- Update metadata
+
+They cannot change the task's status, priority, title, description, or worker binding. These fields are managed by the cortex and the API. This prevents a worker from marking its own task as `done` — only the cortex does that based on whether the worker succeeded or failed.
+
+## Knowledge Context Integration
+
+Active tasks (non-done) are included in the cortex knowledge context. Each task is listed with its number, status, priority, title, and subtask progress:
+
+```
+### Active Tasks
+>>>>>>> theirs
 
 ```bash
 spacebot task list --status pending_approval
@@ -75,11 +132,99 @@ The API accepts the execution plan and dependency edges on task create or update
 
 ## Interface
 
+<<<<<<< ours
 The task list shows status, priority, owner, assignee, plan details, dependency state, subtask progress, linked research, and worker activity. The detail view renders the specification, dependencies, execution plan, and action history.
+=======
+### Task List
+
+The **Tasks** tab renders a Linear-style task list. Each row shows:
+
+- `#N` task number and title
+- Status indicator
+- Priority badge (color-coded: red for critical, amber for high, default for medium, outline for low)
+- Subtask progress (if subtasks exist)
+- GitHub metadata badges (linked issues and PRs, rendered from metadata fields)
+- Worker badge (if a worker is bound)
+- Creation timestamp and author
+
+### Task Detail
+
+Clicking a task opens a detail view with the full markdown description, subtask checklist, metadata, timestamps, and action buttons (Approve, Execute, Mark Done). GitHub issue and PR links in metadata render as clickable badges with status indicators.
+
+### Create Task
+
+The create form has fields for title, description, priority, and initial status. Tasks created from the UI default to `backlog` status and `"human"` as the creator.
+
+### Real-Time Updates
+
+Task state changes are pushed to the UI via SSE events. When a worker completes a task, marks subtasks done, or a status transition occurs, the task list updates immediately without polling.
+
+## Storage
+
+One SQLite table in the agent's database.
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    task_number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'backlog',
+    priority TEXT NOT NULL DEFAULT 'medium',
+    subtasks TEXT,                    -- JSON array
+    metadata TEXT,                    -- JSON object
+    source_memory_id TEXT,
+    worker_id TEXT,
+    created_by TEXT NOT NULL,
+    approved_at TIMESTAMP,
+    approved_by TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    UNIQUE(agent_id, task_number)
+);
+```
+
+Indexes on `agent_id`, `status`, `(agent_id, task_number)`, `source_memory_id`, and `worker_id`.
+
+## Module Layout
+
+```
+src/
+├── tasks.rs                → tasks/
+│   └── store.rs            — TaskStore: CRUD, status transitions, claim_next_ready
+│
+├── tools/
+│   ├── task_create.rs      — task_create LLM tool (branches + cortex chat)
+│   ├── task_list.rs        — task_list LLM tool (branches + cortex chat)
+│   └── task_update.rs      — task_update LLM tool (branches + workers, scoped)
+│
+├── api/
+│   └── tasks.rs            — REST endpoints (list, get, create, update, delete,
+│                             approve, execute) with SSE event emission
+│
+├── agent/
+│   └── cortex.rs           — spawn_ready_task_loop, pickup_one_ready_task,
+│                             gather_active_tasks (knowledge context integration)
+│
+└── migrations/
+    └── 20260219000001_tasks.sql
+```
+
+## Prompt Integration
+>>>>>>> theirs
 
 Task changes are emitted over SSE so the dashboard updates without polling.
 
+<<<<<<< ours
 ## APIs and Tools
+=======
+- **Channel prompt** (`channel.md.j2`) -- has a dedicated "Task Board" section explaining spec-driven tasks and the kanban board. The Delegation section tells the channel to branch for task management. Active tasks appear in the Knowledge Context when synthesis is available.
+- **Branch prompt** (`branch.md.j2`) — documents all three task tools (`task_create`, `task_list`, `task_update`) with spec-driven guidance. `task_create` emphasizes rich markdown descriptions and pre-filled subtasks. `task_update` is framed as iterative spec refinement. Moving to `ready` triggers cortex auto-pickup.
+- **Cortex chat prompt** (`cortex_chat.md.j2`) — lists task board management as a core capability with spec-driven language. The cortex chat has all three task tools.
+- **Tool descriptions** — each task tool has a description template in `prompts/en/tools/` that reinforces the spec-driven philosophy: `task_create` tells the LLM to write full markdown specs with subtask execution plans, `task_update` tells it to refine specs as scope evolves.
+>>>>>>> theirs
 
 The REST API supports listing, creating, updating, approving, and reconciling tasks. Branches use `task_create`, `task_list`, and `task_update` to manage work during a conversation. Workers can report scoped progress without granting them unrestricted control over task lifecycle fields.
 
