@@ -828,6 +828,7 @@ impl SpawnWorkerTool {
             );
         }
 
+<<<<<<< ours
         let worker_type_label = if is_opencode {
             "OpenCode"
         } else if is_acp {
@@ -837,15 +838,26 @@ impl SpawnWorkerTool {
         };
         // OpenCode/ACP workers are always interactive regardless of args.interactive.
         let effectively_interactive = args.interactive || is_opencode || is_acp;
+=======
+        let worker_type_label = if is_opencode { "OpenCode" } else { "builtin" };
+        let tool_secret_pairs = match self.state.deps.runtime_config.secrets.load().as_ref() {
+            Some(store) => store.tool_secret_pairs(),
+            None => Vec::new(),
+        };
+        let safe_task =
+            crate::secrets::scrub::scrub_worker_task_for_memory(&args.task, &tool_secret_pairs);
+        // OpenCode workers are always interactive regardless of args.interactive.
+        let effectively_interactive = args.interactive || is_opencode;
+>>>>>>> theirs
         let message = if effectively_interactive {
             format!(
                 "Interactive {worker_type_label} worker {worker_id} spawned for: {}. Route follow-ups with route_to_worker.",
-                args.task
+                safe_task
             )
         } else {
             format!(
                 "{worker_type_label} worker {worker_id} spawned for: {}. It will report back when done.",
-                args.task
+                safe_task
             )
         };
         let readiness_note = if readiness.ready {
@@ -1059,9 +1071,15 @@ impl Tool for DetachedSpawnWorkerTool {
         let sandbox_write_allowlist = self.deps.sandbox.prompt_write_allowlist();
 
         let secrets_guard = rc.secrets.load();
+<<<<<<< ours
         let tool_secret_names = match (*secrets_guard).as_ref() {
             Some(store) => store.tool_secret_names(&self.deps.agent_id),
             None => Vec::new(),
+=======
+        let (tool_secret_names, tool_secret_pairs) = match (*secrets_guard).as_ref() {
+            Some(store) => (store.tool_secret_names(), store.tool_secret_pairs()),
+            None => (Vec::new(), Vec::new()),
+>>>>>>> theirs
         };
 
         let browser_config = (**rc.browser_config.load()).clone();
@@ -1122,6 +1140,7 @@ impl Tool for DetachedSpawnWorkerTool {
         let (worker, _input_tx) = worker;
         let worker_id = worker.id;
 
+<<<<<<< ours
         // Log to worker_runs directly since there's no parent channel to do it.
         let run_logger =
             crate::conversation::history::ProcessRunLogger::new(self.deps.sqlite_pool.clone());
@@ -1142,11 +1161,16 @@ impl Tool for DetachedSpawnWorkerTool {
                 SpawnWorkerError(format!("failed to persist worker start: {error}"))
             })?;
 
+=======
+        // Emit WorkerStarted event so the UI can track it.
+        let memory_task =
+            crate::secrets::scrub::scrub_worker_task_for_memory(&args.task, &tool_secret_pairs);
+>>>>>>> theirs
         let _ = self.deps.event_tx.send(crate::ProcessEvent::WorkerStarted {
             agent_id: self.deps.agent_id.clone(),
             worker_id,
             channel_id: None,
-            task: args.task.clone(),
+            task: memory_task.clone(),
             worker_type: "cortex".into(),
             interactive: false,
             directory: None,
@@ -1156,11 +1180,31 @@ impl Tool for DetachedSpawnWorkerTool {
             .working_memory
             .emit(
                 crate::memory::WorkingMemoryEventType::WorkerSpawned,
+<<<<<<< ours
                 format!("Worker spawned (cortex): {}", args.task),
+=======
+                format!("Worker spawned (cortex): {memory_task}"),
+>>>>>>> theirs
             )
             .importance(0.5)
             .record();
 
+<<<<<<< ours
+=======
+        // Log to worker_runs directly since there's no parent channel to do it.
+        let run_logger =
+            crate::conversation::history::ProcessRunLogger::new(self.deps.sqlite_pool.clone());
+        run_logger.log_worker_started(
+            None,
+            worker_id,
+            &memory_task,
+            "cortex",
+            &self.deps.agent_id,
+            false,
+            None,
+        );
+
+>>>>>>> theirs
         let secrets_store = rc.secrets.load().as_ref().clone();
         let worker_span = tracing::info_span!(
             "worker.run",
@@ -1232,7 +1276,11 @@ impl Tool for DetachedSpawnWorkerTool {
             }
         }
 
-        tracing::info!(worker_id = %worker_id, task = %args.task, "cortex chat spawned detached worker");
+        tracing::info!(
+            worker_id = %worker_id,
+            task = %memory_task,
+            "cortex chat spawned detached worker"
+        );
 
         Ok(SpawnWorkerOutput {
             worker_id,
@@ -1240,7 +1288,7 @@ impl Tool for DetachedSpawnWorkerTool {
             interactive: false,
             message: format!(
                 "Worker {worker_id} spawned for: {}. It will report back when done.",
-                args.task
+                memory_task
             ),
         })
     }

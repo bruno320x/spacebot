@@ -16,6 +16,32 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+const COMPACTOR_SUMMARY_MAX_TURNS: usize = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompactionPromptPolicy {
+    max_turns: usize,
+    tool_server_enabled: bool,
+}
+
+const fn compaction_prompt_policy() -> CompactionPromptPolicy {
+    CompactionPromptPolicy {
+        max_turns: COMPACTOR_SUMMARY_MAX_TURNS,
+        tool_server_enabled: false,
+    }
+}
+
+fn build_compaction_summary_agent(
+    model: SpacebotModel,
+    compactor_prompt: &str,
+) -> rig::agent::Agent<SpacebotModel> {
+    let policy = compaction_prompt_policy();
+    AgentBuilder::new(model)
+        .preamble(compactor_prompt)
+        .default_max_turns(policy.max_turns)
+        .build()
+}
+
 /// Programmatic monitor that watches channel context size and triggers compaction.
 pub struct Compactor {
     pub channel_id: ChannelId,
@@ -318,13 +344,17 @@ async fn run_compaction(
             },
         );
 
-    // Give the compaction worker memory_save so it can directly persist memories
     // No tool server — the compactor's sole job is producing a summary.
+<<<<<<< ours
     // Memory extraction is handled by persistence branches (Phase 5a).
     let agent = AgentBuilder::new(model)
         .preamble(&compactor_prompt.text)
         .default_max_turns(1)
         .build();
+=======
+    // Memory extraction is handled by persistence branches.
+    let agent = build_compaction_summary_agent(model, compactor_prompt);
+>>>>>>> theirs
 
     let hook = SpacebotHook::new(
         deps.agent_id.clone(),
@@ -682,6 +712,7 @@ pub enum CompactionAction {
 
 #[cfg(test)]
 mod tests {
+<<<<<<< ours
     use super::*;
 
     fn text_message(size: usize) -> Message {
@@ -922,6 +953,29 @@ mod tests {
             history.len(),
             FORK_MIN_RETAINED_MESSAGES + 1,
             "marker + floor"
+=======
+    use super::{compaction_prompt_policy, extract_summary_section};
+
+    #[test]
+    fn extract_summary_section_strips_markdown_header() {
+        let response = "## Summary\n\nCondensed thread narrative";
+        assert_eq!(
+            extract_summary_section(response),
+            "Condensed thread narrative".to_string()
+        );
+    }
+
+    #[test]
+    fn run_compaction_path_remains_toolless_and_one_turn() {
+        let policy = compaction_prompt_policy();
+        assert!(
+            !policy.tool_server_enabled,
+            "compactor summary path must stay toolless"
+        );
+        assert_eq!(
+            policy.max_turns, 1,
+            "compactor summary path must stay single-turn"
+>>>>>>> theirs
         );
     }
 }

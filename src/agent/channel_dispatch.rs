@@ -782,9 +782,15 @@ async fn spawn_worker_inner(
     let sandbox_write_allowlist = state.deps.sandbox.prompt_write_allowlist();
     // Collect tool secret names so the worker template can list available credentials.
     let secrets_guard = rc.secrets.load();
+<<<<<<< ours
     let tool_secret_names = match (*secrets_guard).as_ref() {
         Some(store) => store.tool_secret_names(&state.deps.agent_id),
         None => Vec::new(),
+=======
+    let (tool_secret_names, tool_secret_pairs) = match (*secrets_guard).as_ref() {
+        Some(store) => (store.tool_secret_names(), store.tool_secret_pairs()),
+        None => (Vec::new(), Vec::new()),
+>>>>>>> theirs
     };
 
     let browser_config = (**rc.browser_config.load()).clone();
@@ -987,6 +993,7 @@ async fn spawn_worker_inner(
     };
 
     let worker_id = worker.id;
+<<<<<<< ours
     let transcript_snapshot = worker.transcript_snapshot();
 
     state
@@ -1007,6 +1014,10 @@ async fn spawn_worker_inner(
         )
         .await
         .map_err(|error| AgentError::Other(anyhow::anyhow!(error)))?;
+=======
+    let sanitized_task =
+        crate::secrets::scrub::scrub_worker_task_for_memory(task, &tool_secret_pairs);
+>>>>>>> theirs
 
     let worker_span = tracing::info_span!(
         "worker.run",
@@ -1034,7 +1045,7 @@ async fn spawn_worker_inner(
 
     {
         let mut status = state.status_block.write().await;
-        status.add_worker(worker_id, task, false, interactive);
+        status.add_worker(worker_id, &sanitized_task, false, interactive);
     }
 
     state
@@ -1044,7 +1055,7 @@ async fn spawn_worker_inner(
             agent_id: state.deps.agent_id.clone(),
             worker_id,
             channel_id: Some(state.channel_id.clone()),
-            task: task.to_string(),
+            task: sanitized_task.clone(),
             worker_type: "builtin".into(),
             interactive,
             directory: None,
@@ -1056,13 +1067,18 @@ async fn spawn_worker_inner(
         .working_memory
         .emit(
             crate::memory::WorkingMemoryEventType::WorkerSpawned,
-            format!("Worker spawned: {task}"),
+            format!("Worker spawned: {sanitized_task}"),
         )
         .channel(state.channel_id.to_string())
         .importance(0.6)
         .record();
 
-    tracing::info!(worker_id = %worker_id, task = %task, interactive, "worker spawned");
+    tracing::info!(
+        worker_id = %worker_id,
+        task = %sanitized_task,
+        interactive,
+        "worker spawned"
+    );
 
     Ok(worker_id)
 }
@@ -1143,6 +1159,9 @@ async fn spawn_opencode_worker_inner(
     let persist_directory = directory.clone();
 
     let oc_secrets_store = state.deps.runtime_config.secrets.load().as_ref().clone();
+    let oc_tool_secret_pairs = oc_secrets_store
+        .as_ref()
+        .map_or_else(Vec::new, |store| store.tool_secret_pairs());
 
     // Build temporal/status context so OpenCode workers get the same system
     // info (time, model, context window) as builtin workers.
@@ -1226,6 +1245,8 @@ async fn spawn_opencode_worker_inner(
     };
 
     let worker_id = worker.id;
+    let sanitized_task =
+        crate::secrets::scrub::scrub_worker_task_for_memory(task, &oc_tool_secret_pairs);
 
     state
         .process_run_logger
@@ -1280,7 +1301,7 @@ async fn spawn_opencode_worker_inner(
 
     state.worker_handles.write().await.insert(worker_id, handle);
 
-    let opencode_task = format!("[opencode] {task}");
+    let opencode_task = format!("[opencode] {sanitized_task}");
     {
         let mut status = state.status_block.write().await;
         status.add_worker(worker_id, &opencode_task, false, interactive);
@@ -1305,13 +1326,18 @@ async fn spawn_opencode_worker_inner(
         .working_memory
         .emit(
             crate::memory::WorkingMemoryEventType::WorkerSpawned,
-            format!("Worker spawned (opencode): {task}"),
+            format!("Worker spawned (opencode): {sanitized_task}"),
         )
         .channel(state.channel_id.to_string())
         .importance(0.6)
         .record();
 
-    tracing::info!(worker_id = %worker_id, task = %task, interactive, "OpenCode worker spawned");
+    tracing::info!(
+        worker_id = %worker_id,
+        task = %sanitized_task,
+        interactive,
+        "OpenCode worker spawned"
+    );
 
     Ok(worker_id)
 }
@@ -2061,7 +2087,15 @@ pub async fn resume_idle_worker_into_state(
 
             state.worker_handles.write().await.insert(worker_id, handle);
 
-            let opencode_task = format!("[opencode] {}", idle_worker.task);
+            let task_secret_pairs = match rc.secrets.load().as_ref() {
+                Some(store) => store.tool_secret_pairs(),
+                None => Vec::new(),
+            };
+            let sanitized_task = crate::secrets::scrub::scrub_worker_task_for_memory(
+                &idle_worker.task,
+                &task_secret_pairs,
+            );
+            let opencode_task = format!("[opencode] {sanitized_task}");
             {
                 let mut status = state.status_block.write().await;
                 status.add_worker(worker_id, &opencode_task, false, true);
@@ -2081,7 +2115,11 @@ pub async fn resume_idle_worker_into_state(
                 })
                 .ok();
 
-            tracing::info!(worker_id = %worker_id, task = %idle_worker.task, "OpenCode worker resumed");
+            tracing::info!(
+                worker_id = %worker_id,
+                task = %sanitized_task,
+                "OpenCode worker resumed"
+            );
             Ok(worker_id)
         }
         _ => {
@@ -2194,9 +2232,17 @@ pub async fn resume_idle_worker_into_state(
 
             state.worker_handles.write().await.insert(worker_id, handle);
 
+            let task_secret_pairs = match rc.secrets.load().as_ref() {
+                Some(store) => store.tool_secret_pairs(),
+                None => Vec::new(),
+            };
+            let sanitized_task = crate::secrets::scrub::scrub_worker_task_for_memory(
+                &idle_worker.task,
+                &task_secret_pairs,
+            );
             {
                 let mut status = state.status_block.write().await;
-                status.add_worker(worker_id, &idle_worker.task, false, true);
+                status.add_worker(worker_id, &sanitized_task, false, true);
             }
 
             state
@@ -2206,14 +2252,18 @@ pub async fn resume_idle_worker_into_state(
                     agent_id: state.deps.agent_id.clone(),
                     worker_id,
                     channel_id: Some(state.channel_id.clone()),
-                    task: idle_worker.task.clone(),
+                    task: sanitized_task.clone(),
                     worker_type: "builtin".into(),
                     interactive: true,
                     directory: None,
                 })
                 .ok();
 
-            tracing::info!(worker_id = %worker_id, task = %idle_worker.task, "builtin worker resumed");
+            tracing::info!(
+                worker_id = %worker_id,
+                task = %sanitized_task,
+                "builtin worker resumed"
+            );
             Ok(worker_id)
         }
     }
@@ -2239,6 +2289,7 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+<<<<<<< ours
     use super::{
         WorkerCompletionError, WorkerOutcome, commit_worker_outcome, map_worker_completion,
         spawn_worker_task,
@@ -2247,6 +2298,10 @@ mod tests {
         ProcessRunLogger, WorkerLifecycle, WorkerOutcomeKind, WorkerTerminalOwner,
     };
     use crate::tasks::TaskAttemptOutcome;
+=======
+    use super::{WorkerCompletionError, map_worker_completion_result, spawn_worker_task};
+    use crate::secrets::scrub::{WORKING_MEMORY_TASK_MAX_CHARS, scrub_worker_task_for_memory};
+>>>>>>> theirs
     use crate::{ProcessEvent, WorkerId};
     use std::sync::Arc;
     use std::time::Duration;
@@ -2374,6 +2429,7 @@ mod tests {
     }
 
     #[test]
+<<<<<<< ours
     fn timeout_outcome_is_classified_as_unsuccessful() {
         let (text, notify, success) = map_worker_completion(Ok(WorkerOutcome::Timeout {
             elapsed_secs: 1800,
@@ -2427,6 +2483,38 @@ mod tests {
         assert!(text.contains("max segments"));
         assert!(notify);
         assert!(success);
+=======
+    fn worker_spawned_memory_task_redacts_secrets() {
+        let tool_secret_pairs = vec![("API_KEY".to_string(), "stored-secret".to_string())];
+        let task = "use stored-secret and sk-ant-abc123456789012345678";
+        let result = scrub_worker_task_for_memory(task, &tool_secret_pairs);
+
+        assert!(
+            !result.contains("stored-secret"),
+            "stored secret should be redacted in: {result}"
+        );
+        assert!(
+            !result.contains("sk-ant-"),
+            "leak pattern should be redacted in: {result}"
+        );
+        assert!(
+            result.contains("[REDACTED:API_KEY]"),
+            "stored secret marker missing in: {result}"
+        );
+        assert!(
+            result.contains("[LEAKED_SECRET_REDACTED]"),
+            "leak marker missing in: {result}"
+        );
+    }
+
+    #[test]
+    fn worker_spawned_memory_task_is_bounded() {
+        let task = "a".repeat(WORKING_MEMORY_TASK_MAX_CHARS + 100);
+        let result = scrub_worker_task_for_memory(&task, &[]);
+
+        assert_eq!(result.chars().count(), WORKING_MEMORY_TASK_MAX_CHARS);
+        assert!(result.ends_with(" ... [truncated]"));
+>>>>>>> theirs
     }
 
     #[tokio::test]
