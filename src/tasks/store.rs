@@ -115,6 +115,7 @@ impl std::fmt::Display for TaskPriority {
     }
 }
 
+<<<<<<< ours
 /// Which kind of worker executes a task.
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, utoipa::ToSchema,
@@ -203,6 +204,9 @@ impl std::fmt::Display for TaskWorktreeMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, utoipa::ToSchema)]
+=======
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, utoipa::ToSchema)]
+>>>>>>> theirs
 pub struct TaskSubtask {
     pub title: String,
     pub completed: bool,
@@ -599,6 +603,7 @@ pub struct UpdateTaskInput {
 
 #[derive(Debug, Clone)]
 pub struct TaskUpdateResult {
+    pub previous_task: Task,
     pub previous_status: TaskStatus,
     pub task: Task,
     /// The revision this mutation appended, or `None` when nothing material
@@ -1136,6 +1141,7 @@ impl TaskStore {
         };
 
         let current = task_from_row(row)?;
+        let previous_task = current.clone();
         let previous_status = current.status;
         let context = input.context.clone();
         check_expected_revision(task_number, &current, &context)?;
@@ -1185,6 +1191,7 @@ impl TaskStore {
         }
 
         Ok(Some(TaskUpdateResult {
+            previous_task,
             previous_status,
             task,
             new_revision,
@@ -1367,6 +1374,7 @@ impl TaskStore {
         };
 
         let current = task_from_row(row)?;
+        let previous_task = current.clone();
         let previous_status = current.status;
         let context = input.context.clone();
         check_expected_revision(task_number, &current, &context)?;
@@ -1409,6 +1417,7 @@ impl TaskStore {
 
         Ok(WorkerTaskUpdateResult::Updated(Box::new(
             TaskUpdateResult {
+                previous_task,
                 previous_status,
                 task,
                 new_revision,
@@ -2564,6 +2573,33 @@ mod tests {
                 "source": "github"
             })
         );
+    }
+
+    #[tokio::test]
+    async fn update_result_returns_applied_snapshot_pair() {
+        let store = setup_store().await;
+        let created = store
+            .create(self_assigned_input("old title", TaskStatus::Backlog))
+            .await
+            .expect("task should be created");
+
+        let result = store
+            .update_with_status_transition(
+                created.task_number,
+                UpdateTaskInput {
+                    title: Some("new title".to_string()),
+                    priority: Some(TaskPriority::High),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("update should succeed")
+            .expect("task should exist");
+
+        assert_eq!(result.previous_task.title, "old title");
+        assert_eq!(result.previous_task.priority, TaskPriority::Medium);
+        assert_eq!(result.task.title, "new title");
+        assert_eq!(result.task.priority, TaskPriority::High);
     }
 
     #[tokio::test]
