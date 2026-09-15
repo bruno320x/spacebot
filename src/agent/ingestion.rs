@@ -645,11 +645,19 @@ async fn process_chunk(
     let result = hook.prompt_once(&agent, &mut history, &user_prompt).await;
     classify_chunk_prompt_result(result, filename, chunk_number, total_chunks)?;
 
-    if !contract_state.has_terminal_outcome() {
-        return Err(anyhow::anyhow!(
-            "ingestion chunk {chunk_number}/{total_chunks} for {filename} completed without memory_persistence_complete signal"
-        ));
-    }
+    // A chunk is complete when the LLM run itself returns Ok. Any memory_save
+    // calls have already committed by this point, so requiring the model to also
+    // emit memory_persistence_complete turns a missing advisory signal into a
+    // false failure and can cause duplicate retries. Keep the contract state for
+    // observability, but do not use it as a completion gate.
+    let saved = contract_state.saved_memory_ids().len();
+    tracing::info!(
+        file = %filename,
+        chunk = %format!("{chunk_number}/{total_chunks}"),
+        saved_memories = saved,
+        terminal_signal = contract_state.has_terminal_outcome(),
+        "chunk processed"
+    );
 
     Ok(())
 }
