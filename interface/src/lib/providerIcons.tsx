@@ -122,7 +122,11 @@ export function ProviderIcon({ provider, className = "text-ink-faint", size = 24
 		openai: OpenAI,
 		"openai-chatgpt": OpenAI,
 		openrouter: OpenRouter,
+<<<<<<< ours
 		kilo: KiloIcon,
+=======
+		ollama: OpenRouter,
+>>>>>>> theirs
 		groq: Groq,
 		mistral: Mistral,
 		gemini: Google,

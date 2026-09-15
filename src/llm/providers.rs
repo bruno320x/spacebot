@@ -17,11 +17,19 @@ pub async fn init_providers(config: &LlmConfig) -> Result<()> {
         tracing::info!("OpenAI provider configured");
     }
 
+<<<<<<< ours
     if config.kilo_key.is_some() {
         tracing::info!("Kilo Gateway provider configured");
     }
 
     if config.ollama_base_url.is_some() || config.ollama_key.is_some() {
+=======
+    if config.openrouter_key.is_some() {
+        tracing::info!("OpenRouter provider configured");
+    }
+
+    if config.ollama_key.is_some() {
+>>>>>>> theirs
         tracing::info!("Ollama provider configured");
     }
 
@@ -29,6 +37,7 @@ pub async fn init_providers(config: &LlmConfig) -> Result<()> {
         tracing::info!("OpenCode Zen provider configured");
     }
 
+<<<<<<< ours
     if config.opencode_go_key.is_some() {
         tracing::info!("OpenCode Go provider configured");
     }
@@ -49,5 +58,7 @@ pub async fn init_providers(config: &LlmConfig) -> Result<()> {
         tracing::info!("Google Gemini provider configured");
     }
 
+=======
+>>>>>>> theirs
     Ok(())
 }

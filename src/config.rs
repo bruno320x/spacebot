@@ -122,6 +122,7 @@ mod tests {
         }
     }
 
+<<<<<<< ours
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             for (key, value) in &self.vars {
@@ -180,6 +181,40 @@ api_key = "test-key"
         let result5: StdResult<TomlProviderConfig, toml::de::Error> = toml::from_str(toml5);
         assert!(result5.is_ok(), "Error: {:?}", result5.err());
         assert_eq!(result5.unwrap().api_type, ApiType::Anthropic);
+=======
+/// LLM provider credentials (instance-level).
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    pub anthropic_key: Option<String>,
+    pub openai_key: Option<String>,
+    pub openrouter_key: Option<String>,
+    pub ollama_key: Option<String>,
+    pub zhipu_key: Option<String>,
+    pub groq_key: Option<String>,
+    pub together_key: Option<String>,
+    pub fireworks_key: Option<String>,
+    pub deepseek_key: Option<String>,
+    pub xai_key: Option<String>,
+    pub mistral_key: Option<String>,
+    pub opencode_zen_key: Option<String>,
+}
+
+impl LlmConfig {
+    /// Check if any provider key is configured.
+    pub fn has_any_key(&self) -> bool {
+        self.anthropic_key.is_some()
+            || self.openai_key.is_some()
+            || self.openrouter_key.is_some()
+            || self.ollama_key.is_some()
+            || self.zhipu_key.is_some()
+            || self.groq_key.is_some()
+            || self.together_key.is_some()
+            || self.fireworks_key.is_some()
+            || self.deepseek_key.is_some()
+            || self.xai_key.is_some()
+            || self.mistral_key.is_some()
+            || self.opencode_zen_key.is_some()
+>>>>>>> theirs
     }
 
     #[test]
@@ -1180,9 +1215,27 @@ id = "main"
             2_000,
         );
 
+<<<<<<< ours
         assert!(!readiness.ready);
         assert_eq!(readiness.reason, Some(WorkReadinessReason::StateNotWarm));
     }
+=======
+#[derive(Deserialize, Default)]
+struct TomlLlmConfig {
+    anthropic_key: Option<String>,
+    openai_key: Option<String>,
+    openrouter_key: Option<String>,
+    ollama_key: Option<String>,
+    zhipu_key: Option<String>,
+    groq_key: Option<String>,
+    together_key: Option<String>,
+    fireworks_key: Option<String>,
+    deepseek_key: Option<String>,
+    xai_key: Option<String>,
+    mistral_key: Option<String>,
+    opencode_zen_key: Option<String>,
+}
+>>>>>>> theirs
 
     #[test]
     fn test_work_readiness_requires_embedding_ready() {
@@ -1497,6 +1550,7 @@ id = "main"
         assert!(binding.uses_default_adapter());
     }
 
+<<<<<<< ours
     fn test_inbound_message(source: &str, adapter: Option<&str>) -> crate::InboundMessage {
         crate::InboundMessage {
             id: "test".into(),
@@ -1527,6 +1581,78 @@ id = "main"
             require_mention: false,
             dm_allowed_users: vec![],
             settings: None,
+=======
+impl Config {
+    /// Resolve the instance directory from env or default (~/.spacebot).
+    pub fn default_instance_dir() -> PathBuf {
+        std::env::var("SPACEBOT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .map(|d| d.join(".spacebot"))
+                    .unwrap_or_else(|| PathBuf::from("./.spacebot"))
+            })
+    }
+
+    /// Check whether a first-run onboarding is needed (no config file and no env keys).
+    pub fn needs_onboarding() -> bool {
+        let instance_dir = Self::default_instance_dir();
+        let config_path = instance_dir.join("config.toml");
+        if config_path.exists() {
+            return false;
+        }
+        // No config file — check if env vars can bootstrap
+        std::env::var("ANTHROPIC_API_KEY").is_err()
+            && std::env::var("OPENAI_API_KEY").is_err()
+            && std::env::var("OPENROUTER_API_KEY").is_err()
+            && std::env::var("OLLAMA_API_KEY").is_err()
+            && std::env::var("OPENCODE_ZEN_API_KEY").is_err()
+    }
+
+    /// Load configuration from the default config file, falling back to env vars.
+    pub fn load() -> Result<Self> {
+        let instance_dir = Self::default_instance_dir();
+
+        let config_path = instance_dir.join("config.toml");
+        if config_path.exists() {
+            Self::load_from_path(&config_path)
+        } else {
+            Self::load_from_env(&instance_dir)
+        }
+    }
+
+    /// Load from a specific TOML config file.
+    pub fn load_from_path(path: &Path) -> Result<Self> {
+        let instance_dir = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read config from {}", path.display()))?;
+
+        let toml_config: TomlConfig = toml::from_str(&content)
+            .with_context(|| format!("failed to parse config from {}", path.display()))?;
+
+        Self::from_toml(toml_config, instance_dir)
+    }
+
+    /// Load from environment variables only (no config file).
+    pub fn load_from_env(instance_dir: &Path) -> Result<Self> {
+        let llm = LlmConfig {
+            anthropic_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+            openai_key: std::env::var("OPENAI_API_KEY").ok(),
+            openrouter_key: std::env::var("OPENROUTER_API_KEY").ok(),
+            ollama_key: std::env::var("OLLAMA_API_KEY").ok(),
+            zhipu_key: std::env::var("ZHIPU_API_KEY").ok(),
+            groq_key: std::env::var("GROQ_API_KEY").ok(),
+            together_key: std::env::var("TOGETHER_API_KEY").ok(),
+            fireworks_key: std::env::var("FIREWORKS_API_KEY").ok(),
+            deepseek_key: std::env::var("DEEPSEEK_API_KEY").ok(),
+            xai_key: std::env::var("XAI_API_KEY").ok(),
+            mistral_key: std::env::var("MISTRAL_API_KEY").ok(),
+            opencode_zen_key: std::env::var("OPENCODE_ZEN_API_KEY").ok(),
+>>>>>>> theirs
         };
         let message = test_inbound_message("telegram", None);
         assert!(binding_adapter_matches(&binding, &message));
@@ -1572,6 +1698,7 @@ id = "main"
         assert!(!binding_adapter_matches(&binding, &message));
     }
 
+<<<<<<< ours
     #[test]
     fn adapter_mismatch_default_vs_named() {
         let binding = Binding {
@@ -1587,6 +1714,104 @@ id = "main"
             require_mention: false,
             dm_allowed_users: vec![],
             settings: None,
+=======
+        Ok(Self {
+            instance_dir: instance_dir.to_path_buf(),
+            llm,
+            defaults: DefaultsConfig::default(),
+            agents,
+            messaging: MessagingConfig::default(),
+            bindings: Vec::new(),
+            api: ApiConfig::default(),
+        })
+    }
+
+    /// Validate a raw TOML string as a valid Spacebot config.
+    /// Returns Ok(()) if the config is structurally valid, or an error describing what's wrong.
+    pub fn validate_toml(content: &str) -> Result<()> {
+        let toml_config: TomlConfig =
+            toml::from_str(content).context("failed to parse config TOML")?;
+        // Run full conversion to catch semantic errors (env resolution, defaults, etc.)
+        let instance_dir = Self::default_instance_dir();
+        Self::from_toml(toml_config, instance_dir)?;
+        Ok(())
+    }
+
+    fn from_toml(toml: TomlConfig, instance_dir: PathBuf) -> Result<Self> {
+        let llm = LlmConfig {
+            anthropic_key: toml
+                .llm
+                .anthropic_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok()),
+            openai_key: toml
+                .llm
+                .openai_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
+            openrouter_key: toml
+                .llm
+                .openrouter_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("OPENROUTER_API_KEY").ok()),
+            ollama_key: toml
+                .llm
+                .ollama_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("OLLAMA_API_KEY").ok()),
+            zhipu_key: toml
+                .llm
+                .zhipu_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("ZHIPU_API_KEY").ok()),
+            groq_key: toml
+                .llm
+                .groq_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("GROQ_API_KEY").ok()),
+            together_key: toml
+                .llm
+                .together_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("TOGETHER_API_KEY").ok()),
+            fireworks_key: toml
+                .llm
+                .fireworks_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("FIREWORKS_API_KEY").ok()),
+            deepseek_key: toml
+                .llm
+                .deepseek_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok()),
+            xai_key: toml
+                .llm
+                .xai_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("XAI_API_KEY").ok()),
+            mistral_key: toml
+                .llm
+                .mistral_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("MISTRAL_API_KEY").ok()),
+            opencode_zen_key: toml
+                .llm
+                .opencode_zen_key
+                .as_deref()
+                .and_then(resolve_env_value)
+                .or_else(|| std::env::var("OPENCODE_ZEN_API_KEY").ok()),
+>>>>>>> theirs
         };
         let message = test_inbound_message("telegram", Some("telegram:support"));
         assert!(!binding_adapter_matches(&binding, &message));
@@ -2027,6 +2252,7 @@ id = "main"
         );
     }
 
+<<<<<<< ours
     #[test]
     fn validate_disabled_instance_is_filtered_out() {
         let messaging = MessagingConfig {
@@ -2050,6 +2276,55 @@ id = "main"
             twitch: None,
             signal: None,
             mattermost: None,
+=======
+/// Watches config, prompt, identity, and skill files for changes and triggers
+/// hot reload on the corresponding RuntimeConfig.
+///
+/// Returns a JoinHandle that runs until dropped. File events are debounced
+/// to 2 seconds so rapid edits (e.g. :w in vim hitting multiple writes) are
+/// collapsed into a single reload.
+pub fn spawn_file_watcher(
+    config_path: PathBuf,
+    instance_dir: PathBuf,
+    agents: Vec<(String, PathBuf, Arc<RuntimeConfig>)>,
+    discord_permissions: Option<Arc<arc_swap::ArcSwap<DiscordPermissions>>>,
+    slack_permissions: Option<Arc<arc_swap::ArcSwap<SlackPermissions>>>,
+    telegram_permissions: Option<Arc<arc_swap::ArcSwap<TelegramPermissions>>>,
+    bindings: Arc<arc_swap::ArcSwap<Vec<Binding>>>,
+    messaging_manager: Option<Arc<crate::messaging::MessagingManager>>,
+) -> tokio::task::JoinHandle<()> {
+    use notify::{Event, RecursiveMode, Watcher};
+    use std::time::Duration;
+
+    tokio::task::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel::<Event>();
+
+        let mut watcher = match notify::recommended_watcher(
+            move |result: std::result::Result<Event, notify::Error>| {
+                if let Ok(event) = result {
+                    // Only forward data modification events, not metadata/access changes
+                    use notify::EventKind;
+                    match &event.kind {
+                        EventKind::Create(_)
+                        | EventKind::Modify(notify::event::ModifyKind::Data(_))
+                        | EventKind::Remove(_) => {
+                            let _ = tx.send(event);
+                        }
+                        // Also forward Any/Other modify events (some backends don't distinguish)
+                        EventKind::Modify(notify::event::ModifyKind::Any) => {
+                            let _ = tx.send(event);
+                        }
+                        _ => {}
+                    }
+                }
+            },
+        ) {
+            Ok(w) => w,
+            Err(error) => {
+                tracing::error!(%error, "failed to create file watcher");
+                return;
+            }
+>>>>>>> theirs
         };
         let bindings = vec![Binding {
             authority: None,
@@ -2295,6 +2570,7 @@ tool_use_enforcement = ["gemini", "deepseek"]
             ]))
         );
 
+<<<<<<< ours
         let resolved = config.resolve_agents();
         assert_eq!(
             resolved[0].tool_use_enforcement,
@@ -2310,5 +2586,222 @@ tool_use_enforcement = ["gemini", "deepseek"]
                 .tool_use_enforcement
                 .should_inject("anthropic/claude-sonnet-4")
         );
+=======
+/// Interactive first-run onboarding. Creates ~/.spacebot with a minimal config.
+///
+/// Returns `Some(path)` if the CLI wizard created a config file, or `None` if
+/// the user chose to set up via the embedded UI (setup mode).
+pub fn run_onboarding() -> anyhow::Result<Option<PathBuf>> {
+    use dialoguer::{Input, Password, Select};
+    use std::io::Write;
+
+    println!();
+    println!("  Welcome to Spacebot");
+    println!("  -------------------");
+    println!();
+    println!("  No configuration found. Let's set things up.");
+    println!();
+
+    let setup_method = Select::new()
+        .with_prompt("How do you want to set up?")
+        .items(&["Set up here (CLI)", "Set up in the browser (localhost)"])
+        .default(0)
+        .interact()?;
+
+    if setup_method == 1 {
+        println!();
+        println!("  Starting in setup mode. Open the UI to finish configuration:");
+        println!();
+        println!("    http://localhost:19898");
+        println!();
+        return Ok(None);
+    }
+
+    println!();
+
+    // 1. Pick a provider
+    let providers = &[
+        "Anthropic",
+        "OpenRouter",
+        "OpenAI",
+        "Ollama Cloud",
+        "Z.ai (GLM)",
+        "Groq",
+        "Together AI",
+        "Fireworks AI",
+        "DeepSeek",
+        "xAI (Grok)",
+        "Mistral AI",
+        "OpenCode Zen",
+    ];
+    let provider_idx = Select::new()
+        .with_prompt("Which LLM provider do you want to use?")
+        .items(providers)
+        .default(0)
+        .interact()?;
+
+    let (provider_key_name, toml_key, provider_id) = match provider_idx {
+        0 => ("Anthropic API key", "anthropic_key", "anthropic"),
+        1 => ("OpenRouter API key", "openrouter_key", "openrouter"),
+        2 => ("OpenAI API key", "openai_key", "openai"),
+        3 => ("Ollama Cloud API key", "ollama_key", "ollama"),
+        4 => ("Z.ai (GLM) API key", "zhipu_key", "zhipu"),
+        5 => ("Groq API key", "groq_key", "groq"),
+        6 => ("Together AI API key", "together_key", "together"),
+        7 => ("Fireworks AI API key", "fireworks_key", "fireworks"),
+        8 => ("DeepSeek API key", "deepseek_key", "deepseek"),
+        9 => ("xAI API key", "xai_key", "xai"),
+        10 => ("Mistral AI API key", "mistral_key", "mistral"),
+        11 => ("OpenCode Zen API key", "opencode_zen_key", "opencode-zen"),
+        _ => unreachable!(),
+    };
+
+    // 2. Get API key
+    let api_key: String = Password::new()
+        .with_prompt(format!("Enter your {provider_key_name}"))
+        .interact()?;
+
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        anyhow::bail!("API key cannot be empty");
+    }
+
+    // 3. Agent name
+    let agent_id: String = Input::new()
+        .with_prompt("Agent name")
+        .default("main".to_string())
+        .interact_text()?;
+
+    let agent_id = agent_id.trim().to_lowercase().replace(' ', "-");
+
+    // 4. Optional Discord setup
+    let setup_discord = Select::new()
+        .with_prompt("Set up Discord integration?")
+        .items(&["Not now", "Yes"])
+        .default(0)
+        .interact()?;
+
+    struct DiscordSetup {
+        token: String,
+        guild_id: Option<String>,
+        channel_ids: Vec<String>,
+        dm_user_ids: Vec<String>,
+    }
+
+    let discord = if setup_discord == 1 {
+        let token: String = Password::new()
+            .with_prompt("Discord bot token")
+            .interact()?;
+        let token = token.trim().to_string();
+
+        if token.is_empty() {
+            None
+        } else {
+            println!();
+            println!("  Tip: Right-click a server or channel in Discord with");
+            println!("  Developer Mode enabled to copy IDs. Leave blank to skip.");
+            println!();
+
+            let guild_id: String = Input::new()
+                .with_prompt("Server (guild) ID")
+                .allow_empty(true)
+                .default(String::new())
+                .interact_text()?;
+            let guild_id = guild_id.trim().to_string();
+            let guild_id = if guild_id.is_empty() {
+                None
+            } else {
+                Some(guild_id)
+            };
+
+            let channel_ids_raw: String = Input::new()
+                .with_prompt("Channel IDs (comma-separated, or blank for all)")
+                .allow_empty(true)
+                .default(String::new())
+                .interact_text()?;
+            let channel_ids: Vec<String> = channel_ids_raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let dm_user_ids_raw: String = Input::new()
+                .with_prompt("User IDs allowed to DM the bot (comma-separated, or blank)")
+                .allow_empty(true)
+                .default(String::new())
+                .interact_text()?;
+            let dm_user_ids: Vec<String> = dm_user_ids_raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            Some(DiscordSetup {
+                token,
+                guild_id,
+                channel_ids,
+                dm_user_ids,
+            })
+        }
+    } else {
+        None
+    };
+
+    // 5. Build config.toml
+    let instance_dir = Config::default_instance_dir();
+    let config_path = instance_dir.join("config.toml");
+
+    // Create directory structure
+    std::fs::create_dir_all(&instance_dir)
+        .with_context(|| format!("failed to create {}", instance_dir.display()))?;
+
+    let mut config_content = String::new();
+    config_content.push_str("[llm]\n");
+    config_content.push_str(&format!("{toml_key} = \"{api_key}\"\n"));
+    config_content.push('\n');
+
+    // Write routing defaults for the chosen provider
+    let routing = crate::llm::routing::defaults_for_provider(provider_id);
+    config_content.push_str("[defaults.routing]\n");
+    config_content.push_str(&format!("channel = \"{}\"\n", routing.channel));
+    config_content.push_str(&format!("branch = \"{}\"\n", routing.branch));
+    config_content.push_str(&format!("worker = \"{}\"\n", routing.worker));
+    config_content.push_str(&format!("compactor = \"{}\"\n", routing.compactor));
+    config_content.push_str(&format!("cortex = \"{}\"\n", routing.cortex));
+    config_content.push('\n');
+
+    config_content.push_str("[[agents]]\n");
+    config_content.push_str(&format!("id = \"{agent_id}\"\n"));
+    config_content.push_str("default = true\n");
+
+    if let Some(discord) = &discord {
+        config_content.push_str("\n[messaging.discord]\n");
+        config_content.push_str("enabled = true\n");
+        config_content.push_str(&format!("token = \"{}\"\n", discord.token));
+
+        // Write the binding
+        config_content.push_str("\n[[bindings]]\n");
+        config_content.push_str(&format!("agent_id = \"{agent_id}\"\n"));
+        config_content.push_str("channel = \"discord\"\n");
+        if let Some(guild_id) = &discord.guild_id {
+            config_content.push_str(&format!("guild_id = \"{guild_id}\"\n"));
+        }
+        if !discord.channel_ids.is_empty() {
+            let ids: Vec<String> = discord
+                .channel_ids
+                .iter()
+                .map(|id| format!("\"{id}\""))
+                .collect();
+            config_content.push_str(&format!("channel_ids = [{}]\n", ids.join(", ")));
+        }
+        if !discord.dm_user_ids.is_empty() {
+            let ids: Vec<String> = discord
+                .dm_user_ids
+                .iter()
+                .map(|id| format!("\"{id}\""))
+                .collect();
+            config_content.push_str(&format!("dm_allowed_users = [{}]\n", ids.join(", ")));
+        }
+>>>>>>> theirs
     }
 }

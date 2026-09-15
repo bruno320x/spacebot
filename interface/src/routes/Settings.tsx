@@ -13,6 +13,7 @@ import {
 } from "@spacedrive/primitives";
 import {SettingSidebarButton} from "@/ui/SettingSidebarButton";
 import {useSearch, useNavigate} from "@tanstack/react-router";
+<<<<<<< ours
 import {ModelSelect} from "@/components/ModelSelect";
 import {
 	InstanceSection,
@@ -33,6 +34,157 @@ import {
 	PROVIDERS,
 	type SectionId,
 } from "@/components/settings";
+=======
+import {PlatformIcon} from "@/lib/platformIcons";
+import {ProviderIcon} from "@/lib/providerIcons";
+import {TagInput} from "@/components/TagInput";
+import {parse as parseToml} from "smol-toml";
+
+type SectionId = "providers" | "channels" | "bindings" | "api-keys" | "server" | "opencode" | "worker-logs" | "config-file";
+
+const SECTIONS = [
+	{
+		id: "providers" as const,
+		label: "Providers",
+		group: "general" as const,
+		description: "LLM provider API keys",
+	},
+	{
+		id: "channels" as const,
+		label: "Channels",
+		group: "messaging" as const,
+		description: "Messaging platform credentials",
+	},
+	{
+		id: "bindings" as const,
+		label: "Bindings",
+		group: "messaging" as const,
+		description: "Route conversations to agents",
+	},
+	{
+		id: "api-keys" as const,
+		label: "API Keys",
+		group: "general" as const,
+		description: "Third-party service keys",
+	},
+	{
+		id: "server" as const,
+		label: "Server",
+		group: "system" as const,
+		description: "API server configuration",
+	},
+	{
+		id: "opencode" as const,
+		label: "OpenCode",
+		group: "system" as const,
+		description: "OpenCode worker integration",
+	},
+	{
+		id: "worker-logs" as const,
+		label: "Worker Logs",
+		group: "system" as const,
+		description: "Worker execution logging",
+	},
+	{
+		id: "config-file" as const,
+		label: "Config File",
+		group: "system" as const,
+		description: "Raw config.toml editor",
+	},
+] satisfies {
+	id: SectionId;
+	label: string;
+	group: string;
+	description: string;
+}[];
+
+const PROVIDERS = [
+	{
+		id: "openrouter",
+		name: "OpenRouter",
+		description: "Multi-provider gateway with unified API",
+		placeholder: "sk-or-...",
+		envVar: "OPENROUTER_API_KEY",
+	},
+	{
+		id: "opencode-zen",
+		name: "OpenCode Zen",
+		description: "Multi-format gateway (Kimi, GLM, MiniMax, Qwen)",
+		placeholder: "...",
+		envVar: "OPENCODE_ZEN_API_KEY",
+	},
+	{
+		id: "anthropic",
+		name: "Anthropic",
+		description: "Claude models (Sonnet, Opus, Haiku)",
+		placeholder: "sk-ant-...",
+		envVar: "ANTHROPIC_API_KEY",
+	},
+	{
+		id: "openai",
+		name: "OpenAI",
+		description: "GPT models",
+		placeholder: "sk-...",
+		envVar: "OPENAI_API_KEY",
+	},
+	{
+		id: "ollama",
+		name: "Ollama Cloud",
+		description: "Hosted Ollama models via OpenAI-compatible API",
+		placeholder: "ollama_...",
+		envVar: "OLLAMA_API_KEY",
+	},
+	{
+		id: "zhipu",
+		name: "Z.ai (GLM)",
+		description: "GLM models (GLM-4, GLM-4-Flash)",
+		placeholder: "...",
+		envVar: "ZHIPU_API_KEY",
+	},
+	{
+		id: "groq",
+		name: "Groq",
+		description: "Fast inference for Llama, Mixtral models",
+		placeholder: "gsk_...",
+		envVar: "GROQ_API_KEY",
+	},
+	{
+		id: "together",
+		name: "Together AI",
+		description: "Wide model selection with competitive pricing",
+		placeholder: "...",
+		envVar: "TOGETHER_API_KEY",
+	},
+	{
+		id: "fireworks",
+		name: "Fireworks AI",
+		description: "Fast inference for popular OSS models",
+		placeholder: "...",
+		envVar: "FIREWORKS_API_KEY",
+	},
+	{
+		id: "deepseek",
+		name: "DeepSeek",
+		description: "DeepSeek Chat and Reasoner models",
+		placeholder: "sk-...",
+		envVar: "DEEPSEEK_API_KEY",
+	},
+	{
+		id: "xai",
+		name: "xAI",
+		description: "Grok models",
+		placeholder: "xai-...",
+		envVar: "XAI_API_KEY",
+	},
+	{
+		id: "mistral",
+		name: "Mistral AI",
+		description: "Mistral Large, Small, Codestral models",
+		placeholder: "...",
+		envVar: "MISTRAL_API_KEY",
+	},
+] as const;
+>>>>>>> theirs
 
 export function Settings() {
 	const queryClient = useQueryClient();
