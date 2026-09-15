@@ -8638,6 +8638,7 @@ dependencies = [
  "utoipa-axum",
  "utoipa-swagger-ui",
  "uuid",
+ "windows-sys 0.59.0",
  "zip 2.4.2",
 ]
 
