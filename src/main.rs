@@ -1414,6 +1414,7 @@ async fn run(
 
                     // Load per-conversation settings (idle worker resume).
                     // Try portal store first, then channel_settings for platform channels.
+<<<<<<< ours
                     // `[agents.channel]` config (response_mode, save_attachments) is
                     // threaded through as the agent default so platform channels honor
                     // it (upstream #550).
@@ -1423,6 +1424,9 @@ async fn run(
                             &channel_config,
                         )
                     };
+=======
+                    let agent_channel_default = agent.config.channel.to_conversation_settings();
+>>>>>>> theirs
                     let resolved_settings = {
                         let agent_id_str = agent_id.to_string();
                         let portal_store = spacebot::conversation::PortalConversationStore::new(
@@ -1436,7 +1440,11 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     conv.settings.as_ref(),
                                     None,
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                             Ok(None) => {
@@ -1445,11 +1453,19 @@ async fn run(
                                         spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                             Some(&settings),
                                             None,
+<<<<<<< ours
                                             Some(&agent_channel_defaults),
+=======
+                                            agent_channel_default.as_ref(),
+>>>>>>> theirs
                                         )
                                     }
                                     Ok(None) => {
-                                        spacebot::conversation::settings::ResolvedConversationSettings::default()
+                                        spacebot::conversation::settings::ResolvedConversationSettings::resolve(
+                                            None,
+                                            None,
+                                            agent_channel_default.as_ref(),
+                                        )
                                     }
                                     Err(error) => {
                                         tracing::warn!(
@@ -1457,7 +1473,11 @@ async fn run(
                                             %conversation_id,
                                             "idle worker resume: failed to load channel settings, using defaults"
                                         );
-                                        spacebot::conversation::settings::ResolvedConversationSettings::default()
+                                        spacebot::conversation::settings::ResolvedConversationSettings::resolve(
+                                            None,
+                                            None,
+                                            agent_channel_default.as_ref(),
+                                        )
                                     }
                                 }
                             }
@@ -1467,7 +1487,11 @@ async fn run(
                                     %conversation_id,
                                     "idle worker resume: failed to load portal settings, using defaults"
                                 );
-                                spacebot::conversation::settings::ResolvedConversationSettings::default()
+                                spacebot::conversation::settings::ResolvedConversationSettings::resolve(
+                                    None,
+                                    None,
+                                    agent_channel_default.as_ref(),
+                                )
                             }
                         }
                     };
@@ -1800,6 +1824,7 @@ async fn run(
 
                     // Load per-conversation settings.
                     // Resolution: per-channel DB override > binding defaults > agent defaults > system defaults
+<<<<<<< ours
                     // `[agents.channel]` config (response_mode, save_attachments) is
                     // threaded through as the agent default so platform channels honor
                     // it (upstream #550).
@@ -1809,6 +1834,9 @@ async fn run(
                             &channel_config,
                         )
                     };
+=======
+                    let agent_channel_default = agent.config.channel.to_conversation_settings();
+>>>>>>> theirs
                     let resolved_settings = if message.adapter.as_deref() == Some("portal") {
                         // Portal: load from portal_conversations table.
                         let store = spacebot::conversation::PortalConversationStore::new(
@@ -1819,14 +1847,22 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     conv.settings.as_ref(),
                                     binding_settings.as_ref(),
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                             Ok(None) => {
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                             Err(error) => {
@@ -1838,7 +1874,11 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                         }
@@ -1852,14 +1892,22 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     Some(&settings),
                                     binding_settings.as_ref(),
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                             Ok(None) => {
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                             Err(error) => {
@@ -1871,7 +1919,11 @@ async fn run(
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     None,
                                     binding_settings.as_ref(),
+<<<<<<< ours
                                     Some(&agent_channel_defaults),
+=======
+                                    agent_channel_default.as_ref(),
+>>>>>>> theirs
                                 )
                             }
                         }
