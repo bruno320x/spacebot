@@ -238,7 +238,7 @@ use crate::goals::GoalStore;
 use crate::memory::MemorySearch;
 use crate::sandbox::Sandbox;
 use crate::tasks::TaskStore;
-use crate::{AgentId, ChannelId, ProcessEvent, ProcessId, RoutedSender, WorkerId};
+use crate::{AgentId, ChannelId, ProcessEvent, ProcessId, RoutedSender};
 use rig::tool::Tool as _;
 use rig::tool::server::{ToolServer, ToolServerHandle};
 use std::collections::{HashMap, VecDeque};
@@ -1517,7 +1517,8 @@ pub fn create_branch_tool_server(
 #[allow(clippy::too_many_arguments)]
 pub fn create_worker_tool_server(
     agent_id: AgentId,
-    worker_id: WorkerId,
+    callback: crate::agent::process_control::WorkerCallbackContext,
+    process_control_registry: Arc<crate::agent::process_control::ProcessControlRegistry>,
     channel_id: Option<ChannelId>,
     task_store: Arc<TaskStore>,
     event_tx: broadcast::Sender<ProcessEvent>,
@@ -1539,6 +1540,7 @@ pub fn create_worker_tool_server(
     process_run_logger: crate::conversation::ProcessRunLogger,
     interactive: bool,
 ) -> ToolServerHandle {
+    let worker_id = callback.worker_id;
     let mut server = ToolServer::new()
         .tool(
             ShellTool::new(workspace.clone(), sandbox.clone()).with_streaming(
@@ -1546,6 +1548,7 @@ pub fn create_worker_tool_server(
                 ProcessId::Worker(worker_id),
                 channel_id.clone(),
                 agent_id.clone(),
+                Some(callback.registration_id),
                 tool_call_registry,
             ),
         )
@@ -1567,6 +1570,8 @@ pub fn create_worker_tool_server(
                 event_tx.clone(),
                 process_run_logger,
                 interactive,
+                callback,
+                process_control_registry,
             );
             if let Some(store) = runtime_config.secrets.load().as_ref() {
                 status_tool = status_tool.with_tool_secrets(store.tool_secret_pairs(&agent_id));
@@ -2071,6 +2076,7 @@ mod tests {
             process_id,
             None,
             std::sync::Arc::<str>::from("agent"),
+            None,
             registry,
         );
         let args = shell::ShellArgs {
@@ -2118,6 +2124,7 @@ mod tests {
             process_id.clone(),
             None,
             std::sync::Arc::<str>::from("agent"),
+            None,
             registry.clone(),
         );
 
@@ -2178,6 +2185,7 @@ mod tests {
             process_id,
             None,
             std::sync::Arc::<str>::from("agent"),
+            None,
             registry,
         );
 
