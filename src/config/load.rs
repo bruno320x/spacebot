@@ -115,8 +115,18 @@ fn clamp_chronicle_config(mut config: ChronicleConfig) -> ChronicleConfig {
     config.max_messages_per_checkpoint = config
         .max_messages_per_checkpoint
         .clamp(1, MAX_MESSAGES_PER_CHECKPOINT);
+<<<<<<< ours
     config.rollup_threshold = config.rollup_threshold.max(1);
     config.rollup_batch = config.rollup_batch.clamp(1, config.rollup_threshold);
+=======
+
+    // Rolling fewer than two checkpoints buys nothing, and a batch larger than
+    // the threshold would try to roll entries that have not accumulated yet.
+    config.rollup_batch = config.rollup_batch.clamp(2, MAX_LIST_ENTRIES);
+    config.rollup_threshold = config
+        .rollup_threshold
+        .clamp(config.rollup_batch, MAX_LIST_ENTRIES.saturating_mul(2));
+>>>>>>> theirs
     config
 }
 
