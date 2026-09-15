@@ -840,15 +840,44 @@ struct RollupContext {
 
 impl RollupContext {
     async fn run(&self) -> Result<()> {
+        const MAX_ROLLUP_LEVELS: i64 = 8;
+        let mut progressed = true;
+        while progressed {
+            progressed = false;
+            for level in 0..MAX_ROLLUP_LEVELS {
+                if self.roll_up_level(level).await? {
+                    progressed = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn roll_up_level(&self, level: i64) -> Result<bool> {
         let unrolled = self
             .store
-            .list_unrolled(&self.channel_id, 0, self.config.rollup_threshold as i64)
+            .list_unrolled(&self.channel_id, level, self.config.rollup_threshold as i64)
             .await?;
         if unrolled.len() < self.config.rollup_threshold {
-            return Ok(());
+            return Ok(false);
         }
 
-        let sources = &unrolled[..self.config.rollup_batch];
+        let source_count = self.config.rollup_batch.min(unrolled.len());
+        if source_count < 2 {
+            return Ok(false);
+        }
+        let sources = &unrolled[..source_count];
+        for pair in sources.windows(2) {
+            if pair[0].covers_to_seq != pair[1].covers_from_seq {
+                tracing::warn!(
+                    channel_id = %self.channel_id,
+                    level,
+                    "chronicle rollup skipped because source coverage is not contiguous"
+                );
+                return Ok(false);
+            }
+        }
+
         let prompt_engine = self.deps.runtime_config.prompts.load();
         let preamble = prompt_engine.render_static_segmented("chronicle_rollup")?;
         let routing = self.deps.runtime_config.routing.load();
@@ -903,23 +932,25 @@ impl RollupContext {
                 (title.unwrap_or(fallback_title), summary, Some(model_name))
             }
             Err(error) => {
-                tracing::warn!(%error, channel_id = %self.channel_id, "chronicle rollup summarization failed");
-                return Ok(());
+                tracing::warn!(
+                    %error,
+                    channel_id = %self.channel_id,
+                    level,
+                    "chronicle rollup summarization failed"
+                );
+                return Ok(false);
             }
         };
 
         let first = sources.first().expect("sources is non-empty");
         let last = sources.last().expect("sources is non-empty");
-        let source_ids: Vec<String> = sources
-            .iter()
-            .map(|checkpoint| checkpoint.id.clone())
-            .collect();
+        let source_ids: Vec<String> = sources.iter().map(|c| c.id.clone()).collect();
         let outcome = self
             .store
             .commit_rollup(
                 NewCheckpoint {
                     channel_id: self.channel_id.to_string(),
-                    level: 1,
+                    level: level + 1,
                     kind: CheckpointKind::Rollup,
                     title,
                     summary: summary.clone(),
@@ -929,10 +960,7 @@ impl RollupContext {
                     covers_to_at: last.covers_to_at,
                     covers_from_message_id: first.covers_from_message_id.clone(),
                     covers_to_message_id: last.covers_to_message_id.clone(),
-                    message_count: sources
-                        .iter()
-                        .map(|checkpoint| checkpoint.message_count)
-                        .sum(),
+                    message_count: sources.iter().map(|c| c.message_count).sum(),
                     token_estimate: estimate_text_tokens(&summary) as i64,
                     rolls_up_from_seq: Some(first.seq),
                     rolls_up_to_seq: Some(last.seq),
@@ -942,17 +970,20 @@ impl RollupContext {
             )
             .await?;
 
-        if let CommitOutcome::Committed(checkpoint) = outcome {
-            emit_checkpoint_event(&self.deps, &self.channel_id, &checkpoint);
-            tracing::info!(
-                channel_id = %self.channel_id,
-                seq = checkpoint.seq,
-                source_count = sources.len(),
-                "chronicle rollup committed"
-            );
+        match outcome {
+            CommitOutcome::Committed(checkpoint) => {
+                emit_checkpoint_event(&self.deps, &self.channel_id, &checkpoint);
+                tracing::info!(
+                    channel_id = %self.channel_id,
+                    seq = checkpoint.seq,
+                    level = checkpoint.level,
+                    source_count = sources.len(),
+                    "chronicle hierarchical rollup committed"
+                );
+                Ok(true)
+            }
+            CommitOutcome::Superseded { .. } | CommitOutcome::Busy => Ok(false),
         }
-
-        Ok(())
     }
 }
 

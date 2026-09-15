@@ -178,9 +178,14 @@ impl ChronicleTool {
 
         let checkpoints = self
             .store
-            .list(&self.channel_id, 0, limit)
+            .list_all_levels(&self.channel_id, MAX_LIST_LIMIT)
             .await
             .map_err(|error| ChronicleError(format!("Failed to list checkpoints: {error}")))?;
+        let checkpoints: Vec<_> = checkpoints
+            .into_iter()
+            .filter(|checkpoint| checkpoint.rolled_up_into.is_none())
+            .take(limit as usize)
+            .collect();
 
         if checkpoints.is_empty() {
             return Ok(self.output(
@@ -223,7 +228,37 @@ impl ChronicleTool {
 
     async fn open(&self, seq: Option<i64>) -> Result<ChronicleOutput, ChronicleError> {
         let checkpoint = self.require_checkpoint(seq, "open").await?;
-        Ok(self.output("open", render_checkpoint(&checkpoint)))
+        let mut summary = render_checkpoint(&checkpoint);
+        if checkpoint.level > 0 {
+            let children = self
+                .store
+                .children_of(&checkpoint.id)
+                .await
+                .map_err(|error| {
+                    ChronicleError(format!("Failed to read rollup children: {error}"))
+                })?;
+            if !children.is_empty() {
+                summary.push_str(&format!(
+                    "\n### Covers {} checkpoint(s)\n\n",
+                    children.len()
+                ));
+                for child in &children {
+                    summary.push_str(&format!(
+                        "- **#{}** {}{} — {} → {} · {} messages\n",
+                        child.seq,
+                        if child.level > 0 { "[rollup] " } else { "" },
+                        child.title,
+                        child.covers_from_at.format("%Y-%m-%d %H:%M"),
+                        child.covers_to_at.format("%Y-%m-%d %H:%M"),
+                        child.message_count,
+                    ));
+                }
+                summary.push_str(
+                    "\nOpen a child for its summary, or expand a leaf for raw messages.\n",
+                );
+            }
+        }
+        Ok(self.output("open", summary))
     }
 
     async fn expand(
