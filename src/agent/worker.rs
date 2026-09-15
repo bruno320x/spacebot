@@ -941,41 +941,13 @@ impl Worker {
             }
         }
 
-        // For interactive workers, deliver the initial result to the channel
-        // before entering the follow-up loop. Without this, a fresh worker
-        // that completes its task (outcome signaled) stalls in
-        // `input_rx.recv()` forever and its initial result never reaches the
-        // channel — run() cannot return until the follow-up loop exits, the
-        // loop only exits when the sender is dropped, and the sender is only
-        // dropped on WorkerComplete. ACP/OpenCode workers already send
-        // WorkerInitialResult for the initial task; builtin workers did not.
+        // For interactive workers, commit the initial operation result before
+        // entering the follow-up loop. #653 routes this through the registry's
+        // registration-aware WorkerOperationResult contract for every backend.
         let mut follow_up_failure: Option<String> = None;
         let mut follow_up_blocked: Option<BlockSignalData> = None;
         if let Some(mut input_rx) = self.input_rx.take() {
             if !resuming {
-                if !result.trim().is_empty() {
-                    let scrubbed = if let Some(store) =
-                        self.deps.runtime_config.secrets.load().as_ref().as_ref()
-                    {
-                        crate::secrets::scrub::scrub_with_store(&result, store, &self.deps.agent_id)
-                    } else {
-                        result.clone()
-                    };
-                    let scrubbed = crate::secrets::scrub::scrub_leaks_with_mode(
-                        &scrubbed,
-                        self.deps.runtime_config.sandbox.load().secret_scanner,
-                    );
-                    let _ = self
-                        .deps
-                        .event_tx
-                        .send(crate::ProcessEvent::WorkerInitialResult {
-                            agent_id: self.deps.agent_id.clone(),
-                            worker_id: self.id,
-                            channel_id: self.channel_id.clone(),
-                            result: scrubbed,
-                        });
-                }
-
                 // Fresh worker: persist transcript and signal idle for the first time.
                 // Resumed workers already did this in the preamble above.
                 self.state = WorkerState::WaitingForInput;

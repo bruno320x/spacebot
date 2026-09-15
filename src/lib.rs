@@ -571,14 +571,6 @@ pub struct AgentDeps {
     /// cancellation can kill every child a unit of work spawned — the orphan
     /// prevention surface shared by the shell, ACP, and OpenCode backends.
     pub child_registry: Arc<supervisor::ChildRegistry>,
-    /// Live controls for channel-less (cortex/autonomy) workers, keyed by
-    /// worker id. Lets the cancel API abort detached workers that no channel
-    /// owns (#653); entries are removed when their task finishes.
-    pub detached_workers: Arc<
-        tokio::sync::RwLock<
-            std::collections::HashMap<WorkerId, crate::agent::channel_dispatch::WorkerTaskControl>,
-        >,
-    >,
     /// Sender for injecting messages into channels from outside the normal
     /// inbound message flow (e.g. cross-agent task completion notifications).
     pub injection_tx: tokio::sync::mpsc::Sender<ChannelInjection>,

@@ -1687,10 +1687,6 @@ async fn run(
                         conversation_id.clone(),
                         channel.state.clone(),
                     ).await;
-                    api_state.register_detached_workers(
-                        agent.deps.agent_id.to_string(),
-                        agent.deps.detached_workers.clone(),
-                    ).await;
 
                     // Backfill recent message history from the platform.
                     // The transcript is injected into the system prompt (not chat
@@ -2529,7 +2525,6 @@ async fn initialize_agents(
                 spacebot::agent::process_control::ProcessControlRegistry::new(),
             ),
             child_registry: Arc::new(spacebot::supervisor::ChildRegistry::new()),
-            detached_workers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             injection_tx: injection_tx.clone(),
             working_memory,
             api_state: Some(api_state.clone()),

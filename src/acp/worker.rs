@@ -9,7 +9,7 @@
 
 use crate::acp::types::*;
 use crate::agent::process_control::{
-    WorkerCallbackContext, WorkerFollowUp, WorkerOperationContext,
+    WorkerCallbackContext, WorkerFollowUp, WorkerOperationContext, WorkerResultTarget,
 };
 use crate::agent::worker::WorkerTranscriptSnapshot;
 use crate::config::AcpPermissionMode;
@@ -602,14 +602,36 @@ impl AcpWorker {
                     outcome,
                     "ACP permission request"
                 );
-                let _ = self.event_tx.send(ProcessEvent::WorkerPermission {
+                let interaction_target = self
+                    .process_control_registry
+                    .worker_snapshot_for_callback(self.callback)
+                    .await
+                    .and_then(|snapshot| {
+                        snapshot
+                            .active_operation
+                            .map(|operation| operation.result_target)
+                    })
+                    .unwrap_or(WorkerResultTarget::None);
+                let event_tx = self.event_tx.clone();
+                let event = ProcessEvent::WorkerPermission {
                     agent_id: self.agent_id.clone(),
                     worker_id: self.id,
+                    worker_registration_id: self.callback.registration_id,
+                    interaction_target,
                     channel_id: self.channel_id.clone(),
                     permission_id: permission.permission_id.clone(),
                     description: description.to_string(),
                     patterns: Vec::new(),
-                });
+                };
+                self.process_control_registry
+                    .run_if_worker_state(
+                        self.callback,
+                        crate::agent::process_control::WorkerRuntimeState::Running,
+                        move || {
+                            event_tx.send(event).ok();
+                        },
+                    )
+                    .await;
                 let response = build_permission_response(id, outcome);
                 write_line(stdin, &response).await?;
                 Ok(())

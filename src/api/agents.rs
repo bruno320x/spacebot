@@ -569,9 +569,6 @@ pub(super) async fn trigger_warmup(
                     crate::agent::process_control::ProcessControlRegistry::new(),
                 ),
                 child_registry: Arc::new(crate::supervisor::ChildRegistry::new()),
-                detached_workers: Arc::new(tokio::sync::RwLock::new(
-                    std::collections::HashMap::new(),
-                )),
                 injection_tx,
                 working_memory,
                 api_state: None,
@@ -1027,7 +1024,6 @@ pub async fn create_agent_internal(
             crate::agent::process_control::ProcessControlRegistry::new(),
         ),
         child_registry: Arc::new(crate::supervisor::ChildRegistry::new()),
-        detached_workers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         injection_tx: state.injection_tx.clone(),
         agent_names: {
             let configs = state.agent_configs.load();

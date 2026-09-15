@@ -3237,6 +3237,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             future,
         );
@@ -3606,6 +3607,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             std::future::poll_fn(move |_context| {
                 future_polls.fetch_add(1, Ordering::SeqCst);
@@ -3708,6 +3710,7 @@ mod tests {
             None,
             None,
             None,
+            crate::secrets::scrub::SecretScanMode::Strict,
             "builtin",
             std::future::poll_fn(move |_context| {
                 future_polls.fetch_add(1, Ordering::SeqCst);

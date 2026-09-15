@@ -598,6 +598,7 @@ mod tests {
             tool.call(SetStatusArgs {
                 status: "stale".to_string(),
                 kind: StatusKind::Progress,
+                evidence: None,
             })
             .await
             .is_err()

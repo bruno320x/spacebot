@@ -173,7 +173,6 @@ async fn bootstrap(instance_dir: &Path) -> anyhow::Result<AgentDeps> {
             spacebot::agent::process_control::ProcessControlRegistry::new(),
         ),
         child_registry: Arc::new(spacebot::supervisor::ChildRegistry::new()),
-        detached_workers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         injection_tx: tokio::sync::mpsc::channel(1).0,
         working_memory: spacebot::memory::WorkingMemoryStore::new(
             db.sqlite.clone(),

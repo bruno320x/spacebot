@@ -1435,6 +1435,7 @@ pub(crate) fn operation_result_or_marker(result: String, backend: WorkerBackend)
         WorkerBackend::OpenCode => {
             "OpenCode operation completed without a textual result.".to_string()
         }
+        WorkerBackend::Acp => "ACP operation completed without a textual result.".to_string(),
     }
 }
 

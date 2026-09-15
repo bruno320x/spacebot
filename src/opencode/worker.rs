@@ -304,6 +304,7 @@ impl OpenCodeWorker {
             system_prompt: None,
             model: None,
             secrets_store: None,
+            secret_scan_mode: SecretScanMode::Strict,
             sqlite_pool: None,
             resuming_session: None,
             transcript_snapshot: crate::agent::worker::new_worker_transcript_snapshot(),
