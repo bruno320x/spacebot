@@ -104,24 +104,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
-            archive: tar.gz
             os: linux
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            archive: tar.gz
             os: linux
           - target: aarch64-apple-darwin
             runner: macos-15
-            archive: tar.gz
             os: macos
           - target: x86_64-apple-darwin
             runner: macos-15-intel
-            archive: tar.gz
             os: macos
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2025
-            archive: zip
-            os: windows
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -177,8 +169,7 @@ jobs:
       - name: Build binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package Unix binary
-        if: matrix.os != 'windows'
+      - name: Package binary
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -187,23 +178,11 @@ jobs:
           cp "target/${{ matrix.target }}/release/spacebot" "$DIR/spacebot"
           tar -czf "spacebot-${VERSION}-${{ matrix.target }}.tar.gz" "$DIR"
 
-      - name: Package Windows binary
-        if: matrix.os == 'windows'
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $dir = "spacebot-$version-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/spacebot.exe" "$dir/spacebot.exe"
-          Compress-Archive -Path $dir -DestinationPath "spacebot-$version-${{ matrix.target }}.zip"
-
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: spacebot-${{ matrix.target }}
-          path: |
-            spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
-            spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}.zip
+          path: spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -319,7 +298,7 @@ jobs:
       - name: Prepare release assets and checksums
         run: |
           mkdir -p release-assets
-          find binaries -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+          find binaries -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
           cd release-assets
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
@@ -332,7 +311,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release-assets/*.tar.gz
-            release-assets/*.zip
             release-assets/SHA256SUMS
 
   update-homebrew:
