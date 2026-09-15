@@ -6,6 +6,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub const SYSTEM_PROMPT_CACHE_BOUNDARY: &str = "<!-- spacebot-system-prompt-cache-boundary -->";
+
 /// A completed background process result, passed to the retrigger template.
 #[derive(Clone, Debug, Serialize)]
 pub struct RetriggerResult {
@@ -148,6 +150,14 @@ pub struct PromptEngine {
     env: Arc<Environment<'static>>,
     /// Selected language code (e.g., "en").
     language: String,
+}
+
+pub fn split_system_prompt_cache_boundary(prompt: &str) -> Option<(&str, &str)> {
+    prompt.split_once(SYSTEM_PROMPT_CACHE_BOUNDARY)
+}
+
+pub fn strip_system_prompt_cache_boundary(prompt: &str) -> String {
+    prompt.replace(SYSTEM_PROMPT_CACHE_BOUNDARY, "")
 }
 
 impl PromptEngine {
@@ -982,9 +992,55 @@ impl PromptEngine {
     /// Render the channel system prompt along with its block map.
     pub fn render_channel_prompt(
         &self,
+<<<<<<< ours
         inputs: ChannelPromptInputs,
     ) -> Result<blocks::SegmentedPrompt> {
         self.render_segmented("channel", inputs.into_inputs())
+=======
+        identity_context: Option<String>,
+        memory_bulletin: Option<String>,
+        knowledge_synthesis: Option<String>,
+        skills_prompt: Option<String>,
+        worker_capabilities: String,
+        conversation_context: Option<String>,
+        status_text: Option<String>,
+        coalesce_hint: Option<String>,
+        available_channels: Option<String>,
+        sandbox_enabled: bool,
+        org_context: Option<String>,
+        adapter_prompt: Option<String>,
+        project_context: Option<String>,
+        backfill_transcript: Option<String>,
+        working_memory: Option<String>,
+        channel_activity_map: Option<String>,
+        participant_context: Option<String>,
+        direct_mode: bool,
+    ) -> Result<String> {
+        self.render(
+            "channel",
+            context! {
+                identity_context => identity_context,
+                memory_bulletin => memory_bulletin,
+                skills_prompt => skills_prompt,
+                worker_capabilities => worker_capabilities,
+                conversation_context => conversation_context,
+                status_text => status_text,
+                coalesce_hint => coalesce_hint,
+                available_channels => available_channels,
+                sandbox_enabled => sandbox_enabled,
+                org_context => org_context,
+                adapter_prompt => adapter_prompt,
+                project_context => project_context,
+                backfill_transcript => backfill_transcript,
+                working_memory => working_memory,
+                channel_activity_map => channel_activity_map,
+                participant_context => participant_context,
+                knowledge_synthesis => knowledge_synthesis,
+                direct_mode => direct_mode,
+                system_prompt_cache_boundary => SYSTEM_PROMPT_CACHE_BOUNDARY,
+            },
+        )
+>>>>>>> theirs
     }
 
     /// Get the configured language code.
@@ -1188,7 +1244,13 @@ pub struct ProjectWorktreeContext {
 
 #[cfg(test)]
 mod tests {
+<<<<<<< ours
     use super::{ChannelPromptInputs, PromptEngine};
+=======
+    use super::{
+        PromptEngine, split_system_prompt_cache_boundary, strip_system_prompt_cache_boundary,
+    };
+>>>>>>> theirs
     use crate::config::ToolUseEnforcement;
 
     /// A channel prompt with only the always-present fragments filled in.
@@ -1677,7 +1739,84 @@ mod tests {
     }
 
     #[test]
+<<<<<<< ours
     fn autonomy_run_fragments_render() {
+=======
+    fn channel_prompt_cache_boundary_keeps_volatile_sections_out_of_stable_prefix() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+        let first_prompt = engine
+            .render_channel_prompt_with_links(
+                None,
+                None,
+                Some("Knowledge A".to_string()),
+                None,
+                "## Worker Capabilities\nstable capabilities".to_string(),
+                Some("Conversation A".to_string()),
+                Some("Status A".to_string()),
+                None,
+                Some("## Other Channels\nchannel A".to_string()),
+                false,
+                None,
+                None,
+                None,
+                None,
+                Some("## Working Memory\nworking A".to_string()),
+                Some("## Channel Activity\nactivity A".to_string()),
+                Some("## Participants\nparticipant A".to_string()),
+                false,
+            )
+            .expect("channel prompt should render");
+        let second_prompt = engine
+            .render_channel_prompt_with_links(
+                None,
+                None,
+                Some("Knowledge B".to_string()),
+                None,
+                "## Worker Capabilities\nstable capabilities".to_string(),
+                Some("Conversation B".to_string()),
+                Some("Status B".to_string()),
+                None,
+                Some("## Other Channels\nchannel B".to_string()),
+                false,
+                None,
+                None,
+                None,
+                None,
+                Some("## Working Memory\nworking B".to_string()),
+                Some("## Channel Activity\nactivity B".to_string()),
+                Some("## Participants\nparticipant B".to_string()),
+                false,
+            )
+            .expect("channel prompt should render");
+
+        let (first_stable, first_volatile) = split_system_prompt_cache_boundary(&first_prompt)
+            .expect("channel prompt should include cache boundary");
+        let (second_stable, second_volatile) = split_system_prompt_cache_boundary(&second_prompt)
+            .expect("channel prompt should include cache boundary");
+
+        assert_eq!(first_stable, second_stable);
+        assert_ne!(first_volatile, second_volatile);
+        assert!(first_stable.contains("stable capabilities"));
+        assert!(!first_stable.contains("working A"));
+        assert!(!first_stable.contains("Status A"));
+        assert!(first_volatile.contains("working A"));
+        assert!(first_volatile.contains("Status A"));
+        assert!(first_volatile.contains("Knowledge A"));
+    }
+
+    #[test]
+    fn strip_system_prompt_cache_boundary_removes_marker_only() {
+        let prompt = "stable\n<!-- spacebot-system-prompt-cache-boundary -->\nvolatile";
+
+        assert_eq!(
+            strip_system_prompt_cache_boundary(prompt),
+            "stable\n\nvolatile"
+        );
+    }
+
+    #[test]
+    fn knowledge_synthesis_prompt_preserves_participant_roles() {
+>>>>>>> theirs
         let engine = PromptEngine::new("en").expect("prompt engine should build");
 
         let retry = engine
