@@ -46,7 +46,28 @@ pub struct AutonomyRunHandle {
     pub run_id: String,
     pub store: Arc<AutonomyRunStore>,
     completed: Arc<AtomicBool>,
+<<<<<<< ours
     finish_request: Arc<Mutex<Option<AutonomyFinishRequest>>>,
+=======
+    state: Arc<Mutex<AutonomyRunState>>,
+    changed: Arc<Notify>,
+}
+
+#[derive(Debug, Default)]
+struct AutonomyRunState {
+    finish_request: Option<AutonomyFinishRequest>,
+    active_children: HashSet<AutonomyChild>,
+    quiescent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AutonomyChild {
+    Branch(crate::BranchId),
+    WorkerOperation {
+        worker_id: crate::WorkerId,
+        operation_id: crate::agent::process_control::WorkerOperationId,
+    },
+>>>>>>> theirs
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +444,7 @@ pub async fn run_autonomy_channel(
                             None
                         }
                     }
+<<<<<<< ours
                 }
             }
         }
@@ -439,6 +461,43 @@ pub async fn run_autonomy_channel(
     // durable child rows instead of cancelling useful work to make closure fit
     // the parent deadline.
     let settled = settle_owned_children(&handle, deadline).await?;
+=======
+                },
+            }
+        }
+    }
+
+    let interrupted = active_epoch
+        .as_ref()
+        .map(|epoch| epoch.handle.clone())
+        .or_else(|| run_slot.current());
+    if deps.autonomy_control.should_preserve_idle_workers() {
+        if let Some(handle) = &interrupted {
+            for child in handle.active_children() {
+                match child {
+                    AutonomyChild::Branch(branch_id) => {
+                        channel_control
+                            .cancel_branch_with_reason(branch_id, "daemon restarting")
+                            .await;
+                    }
+                    AutonomyChild::WorkerOperation { .. } => {}
+                }
+            }
+        }
+    } else {
+        for child in interrupted
+            .as_ref()
+            .map(|handle| handle.active_children())
+            .unwrap_or_default()
+        {
+            if let AutonomyChild::Branch(branch_id) = child {
+                channel_control
+                    .cancel_branch_with_reason(branch_id, "autonomy supervisor shutting down")
+                    .await;
+            }
+        }
+    }
+>>>>>>> theirs
 
     // Record the run outcome after owned noninteractive children settled, or
     // after the configured hard deadline. The latter retains child attribution
@@ -783,20 +842,61 @@ fn render_task_line(task: &Task, agent_id: &str, prior_attempts: Option<&str>) -
 
 /// Render currently running workers so the run doesn't duplicate in-flight work.
 async fn render_active_workers(deps: &AgentDeps) -> anyhow::Result<Option<String>> {
+    let live_workers = deps.process_control_registry.list_worker_snapshots().await;
+    let live_ids = live_workers
+        .iter()
+        .map(|worker| worker.worker_id.to_string())
+        .collect::<HashSet<_>>();
     let logger = crate::conversation::ProcessRunLogger::new(deps.sqlite_pool.clone());
     let (workers, _total) = logger
         .list_worker_runs(&deps.agent_id, 20, 0, Some("running"))
         .await?;
+<<<<<<< ours
     if workers.is_empty() {
+=======
+    let workers: Vec<_> = workers
+        .into_iter()
+        .filter(|worker| {
+            !matches!(
+                worker.lifecycle.as_str(),
+                "succeeded" | "partial" | "cancelled" | "timed_out" | "blocked" | "failed"
+            )
+        })
+        .collect();
+    if workers.is_empty() && live_workers.is_empty() {
+>>>>>>> theirs
         return Ok(None);
     }
 
     let mut output = String::new();
+    for worker in live_workers {
+        let task_line = crate::summarize_first_non_empty_line(&worker.provenance.task, 160);
+        output.push_str(&format!(
+            "- {} [{}; {}; runtime attached{}] {}\n",
+            worker.worker_id,
+            worker.backend,
+            worker.state,
+            if worker.interactive {
+                ", interactive"
+            } else {
+                ""
+            },
+            task_line,
+        ));
+    }
     for worker in workers {
+        if live_ids.contains(&worker.id) {
+            continue;
+        }
         let task_line = crate::summarize_first_non_empty_line(&worker.task, 160);
         output.push_str(&format!(
+<<<<<<< ours
             "- {} [{}] {}\n",
             worker.id, worker.worker_type, task_line
+=======
+            "- {} [{}; {}{}{}; unavailable] {}\n",
+            worker.id, worker.worker_type, worker.lifecycle, interaction, ownership, task_line
+>>>>>>> theirs
         ));
     }
     Ok(Some(output))
@@ -966,4 +1066,115 @@ mod tests {
         assert!(task_visible_to_agent(&unowned, "agent-a", true));
         assert!(!task_visible_to_agent(&unowned, "agent-a", false));
     }
+<<<<<<< ours
+=======
+
+    #[tokio::test]
+    async fn finish_waits_for_owned_children() {
+        let store = run_store().await;
+        let run_id = store.begin_run().await.unwrap();
+        let handle = AutonomyRunHandle::new(run_id, 1, store);
+        let worker_id = crate::WorkerId::new_v4();
+        let child = AutonomyChild::WorkerOperation {
+            worker_id,
+            operation_id: crate::agent::process_control::WorkerOperationId::new(),
+        };
+
+        assert!(handle.register_child(child));
+        assert_eq!(
+            handle.request_finish(AutonomyFinishRequest {
+                summary: "worker still active".to_string(),
+                actions: Vec::new(),
+            }),
+            Err(1)
+        );
+        handle.settle_child(child);
+        assert_eq!(
+            handle.request_finish(AutonomyFinishRequest {
+                summary: "worker result incorporated".to_string(),
+                actions: Vec::new(),
+            }),
+            Ok(true)
+        );
+        assert!(!handle.register_child(AutonomyChild::WorkerOperation {
+            worker_id: crate::WorkerId::new_v4(),
+            operation_id: crate::agent::process_control::WorkerOperationId::new(),
+        }));
+    }
+
+    #[tokio::test]
+    async fn stale_worker_operation_cannot_settle_later_child() {
+        let store = run_store().await;
+        let run_id = store.begin_run().await.unwrap();
+        let handle = AutonomyRunHandle::new(run_id, 1, store);
+        let worker_id = crate::WorkerId::new_v4();
+        let stale = AutonomyChild::WorkerOperation {
+            worker_id,
+            operation_id: crate::agent::process_control::WorkerOperationId::new(),
+        };
+        let current = AutonomyChild::WorkerOperation {
+            worker_id,
+            operation_id: crate::agent::process_control::WorkerOperationId::new(),
+        };
+        assert!(handle.register_child(current));
+
+        handle.settle_child(stale);
+
+        assert!(handle.owns_child(current));
+        assert!(handle.has_active_children());
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cannot_clear_current_epoch() {
+        let store = run_store().await;
+        let slot = AutonomyRunSlot::default();
+        let first = slot.begin("first".to_string(), store.clone());
+        assert!(slot.clear_if_current(first.generation));
+        let second = slot.begin("second".to_string(), store);
+
+        assert!(!slot.clear_if_current(first.generation));
+        assert_eq!(slot.current().unwrap().run_id, "second");
+        assert!(slot.clear_if_current(second.generation));
+        assert!(slot.current().is_none());
+    }
+
+    #[tokio::test]
+    async fn autonomy_doorbell_coalesces_while_pending() {
+        let control = AutonomyControl::default();
+        let (check_tx, mut check_rx) = mpsc::channel(1);
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        control.attach(check_tx, shutdown_tx);
+
+        assert!(!control.is_ready());
+        control.activate();
+        assert!(control.is_ready());
+        control.request_check();
+
+        assert_eq!(check_rx.recv().await, Some(()));
+        assert!(check_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn wake_claim_rolls_back_when_epoch_is_not_active() {
+        let pool = test_pool().await;
+        let wake_store = crate::wakes::WakeEventStore::new(pool.clone());
+        wake_store
+            .enqueue("task.approved", "task:7", &serde_json::json!({"task": 7}))
+            .await
+            .unwrap();
+        let event = wake_store.pending(1).await.unwrap().remove(0);
+
+        assert!(
+            commit_wake_claim(
+                &pool,
+                "missing-run",
+                std::slice::from_ref(&event.id),
+                std::slice::from_ref(&event.id),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(wake_store.pending_count().await.unwrap(), 1);
+    }
+>>>>>>> theirs
 }

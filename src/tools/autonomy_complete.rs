@@ -230,4 +230,29 @@ mod tests {
 
         assert!(error.to_string().contains("summary"));
     }
+<<<<<<< ours
+=======
+
+    #[tokio::test]
+    async fn rejects_completion_while_owned_work_is_active() {
+        let store = store().await;
+        let run_id = store.begin_run().await.expect("begin");
+        let handle = AutonomyRunHandle::new(run_id, 1, Arc::new(store));
+        handle.register_child(crate::agent::autonomy::AutonomyChild::WorkerOperation {
+            worker_id: crate::WorkerId::new_v4(),
+            operation_id: crate::agent::process_control::WorkerOperationId::new(),
+        });
+        let tool = AutonomyCompleteTool::new(handle);
+
+        let error = tool
+            .call(AutonomyCompleteArgs {
+                summary: "Tried to finish before the worker returned.".to_string(),
+                actions: Vec::new(),
+            })
+            .await
+            .expect_err("active work must block completion");
+
+        assert!(error.to_string().contains("still active"));
+    }
+>>>>>>> theirs
 }

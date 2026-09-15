@@ -16,18 +16,26 @@ This has a well-known failure mode: the agent writes malformed JSON, overwrites 
 
 ## The Autonomy Channel
 
+<<<<<<< ours
 > **Superseded in part by [autonomy-lifecycle.md](autonomy-lifecycle.md).**
 > That doc replaces the fixed interval with run-scheduled wakes, splits the
 > run into a deliberation phase and an action phase, moves ready-task pickup
 > off the cortex and into the run, and adds explicit task enrichment state.
 > The philosophy, level semantics, wake model, and briefing-as-system-prompt
 > decisions below still hold.
+=======
+The autonomy channel starts with the agent and remains alive until shutdown. It is not per-task and not per-heartbeat. It waits while idle and processes one event at a time. Interactive worker controls live in the agent registry.
+>>>>>>> theirs
 
 The autonomy channel is the agent's process for self-directed work. It is not per-task. It is one channel that wakes on a configured interval, surveys the task state, does as much enrichment and preparation as useful, executes ready tasks if any exist, and exits. On the next interval it wakes again.
 
+<<<<<<< ours
 The interval is the default trigger, not the only one. Wake events — schedules, webhooks, internal events like a task approval or a user comment, and idle/staleness conditions — pull the next run forward and appear in its context with their payloads and instructions. The channel is the single consumer of all wake sources; see [`wakes.md`](wakes.md) for the trigger model, queue semantics, and authority rules.
 
 It is structurally similar to a cron channel — periodic, no user present, full agent context. The difference is that it is persistent across runs and has awareness of its own history.
+=======
+The resident channel and an autonomy run have different lifetimes. The agent registry owns live worker controls. A run is a durable decision epoch with a run id, claimed wake events, operation-scoped child attribution, and a terminal summary. `autonomy_complete` closes the epoch and returns the channel to idle.
+>>>>>>> theirs
 
 The autonomy channel is the only process that:
 - Enriches and researches `pending_approval` tasks without a user present
@@ -49,6 +57,7 @@ The cortex assembles the autonomy channel's context before each wake. It gets:
 - **Wake events** — what pulled this run forward, if anything: the wake's name, instructions, and payload for each pending event since the last run. Surfaced first, because they are usually why the run exists.
 - **Task state** — all active tasks: ready, in-progress, backlog, pending_approval. Full detail on each, including all comments.
 - **Goals** — all active goals with descriptions and notes. Background context and direction, not a work queue. See [`goals.md`](goals.md).
+<<<<<<< ours
 - **Active workers** — what's currently running so it doesn't duplicate work.
 - **Its own prior transcript** — the channel's persisted history, where each finished run has compacted to its `autonomy_complete` summary. This is the continuity mechanism; see [Continuity Between Runs](#continuity-between-runs).
 
@@ -59,6 +68,12 @@ Continuity arrives as the channel's own history rather than as injected run summ
 All of the above renders into the channel's system prompt, re-rendered on each wake. It is not delivered as an inbound message.
 
 This matters because the autonomy channel is one conversation that spans every run — a single conversation id, one persistent transcript. Anything delivered as a message is written into that transcript and stays there. A briefing sent as a message means run fifty wakes to forty-nine copies of its own instructions, with its actual work crowded out between them. Rendering the same content as the system prompt costs nothing extra, since the cortex already assembles it fresh each wake, and it leaves no residue. It is also the honest representation: a briefing stored with a user role and a system sender describes a participant who does not exist.
+=======
+- **Workers** — registry-backed liveness and routability, plus durable nonterminal rows that require reconciliation.
+- **Recent epoch summaries** - compact continuity from `autonomy_complete`.
+
+The run store is the continuity index and provenance record. Live history belongs to the current epoch and is cleared before the next one. Retained worker controls are agent runtime state, not transcript state.
+>>>>>>> theirs
 
 Two things legitimately arrive mid-run and so must be messages: the soft wrap-up warning at `warn_secs` and the hard timeout notice at `timeout_secs`. Both are ephemeral — present in the live run's context, never persisted to the transcript. They are scaffolding for one run, not history.
 
@@ -329,7 +344,11 @@ Autonomy channel wakes with full context + its own prior transcript
 Calls autonomy_complete → summary recorded in the run store
   → and persisted as the run's assistant turn; the run's detail compacts to it
   ↓
+<<<<<<< ours
 Channel exits → cortex records last_run_at, cleans up
+=======
+Epoch closes → channel returns to idle; retained worker controls remain in the agent registry
+>>>>>>> theirs
 ```
 
 If the channel crashes mid-execution, the task returns to `ready`. If a task fails 3 consecutive times, it moves to `failed` and emits a working memory `Error` event. Enrichment runs (comments only) do not count as failures. `failed` is a new `TaskStatus` variant — the current set is pending_approval, backlog, ready, in_progress, done — so adding it includes the transition table, API, and UI sweep.
