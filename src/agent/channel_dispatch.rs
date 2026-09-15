@@ -616,6 +616,19 @@ async fn release_task_reservation(state: &ChannelState, task: &str) {
     state.reserved_tasks.write().await.remove(&normalized);
 }
 
+fn worker_task_prompt(task: &str, task_context: Option<&str>) -> String {
+    match task_context {
+        Some(task_context) => format!("{task}\n\n{task_context}"),
+        None => task.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkerTaskContext<'a> {
+    pub task_context: Option<&'a str>,
+    pub origin_branch_id: Option<BranchId>,
+}
+
 /// Build pre-rendered project context for injection into worker/channel prompts.
 ///
 /// Fetches all active projects with their repos and worktrees, converts them
@@ -723,8 +736,12 @@ pub async fn spawn_worker_from_state(
     suggested_skills: &[&str],
     required_skills: &[&str],
     worker_context: &WorkerContextMode,
+<<<<<<< ours
     origin_branch_id: Option<BranchId>,
     task_type: Option<&str>,
+=======
+    task_context: WorkerTaskContext<'_>,
+>>>>>>> theirs
 ) -> std::result::Result<WorkerId, AgentError> {
     if state
         .autonomy_run
@@ -748,7 +765,7 @@ pub async fn spawn_worker_from_state(
         suggested_skills,
         required_skills,
         worker_context,
-        origin_branch_id,
+        task_context,
     )
     .await;
 
@@ -769,7 +786,7 @@ async fn spawn_worker_inner(
     suggested_skills: &[&str],
     required_skills: &[&str],
     worker_context: &WorkerContextMode,
-    origin_branch_id: Option<BranchId>,
+    task_context: WorkerTaskContext<'_>,
 ) -> std::result::Result<WorkerId, AgentError> {
     let rc = &state.deps.runtime_config;
     let prompt_engine = rc.prompts.load();
@@ -889,6 +906,8 @@ async fn spawn_worker_inner(
         }
     }
 
+    let worker_task = worker_task_prompt(task, task_context.task_context);
+
     // Fork the channel's conversation history under the worker's own system
     // prompt — the same fork semantic branches use. An oversized fork is
     // compacted here so the worker's first LLM call doesn't start life in
@@ -902,7 +921,7 @@ async fn spawn_worker_inner(
             // memory included — so the fork is budgeted against what the
             // worker's first call actually leaves for history.
             let prompt_tokens = crate::agent::compactor::estimate_text_tokens(&system_prompt.text)
-                + crate::agent::compactor::estimate_text_tokens(task);
+                + crate::agent::compactor::estimate_text_tokens(&worker_task);
             let removed = crate::agent::compactor::precompact_forked_history(
                 &mut history,
                 context_window,
@@ -939,7 +958,7 @@ async fn spawn_worker_inner(
     let worker = if interactive {
         let (worker, input_tx, inject_tx) = Worker::new_interactive(
             Some(state.channel_id.clone()),
-            task,
+            &worker_task,
             system_prompt.clone(),
             state.deps.clone(),
             browser_config.clone(),
@@ -966,7 +985,7 @@ async fn spawn_worker_inner(
     } else {
         let (worker, inject_tx) = Worker::new(
             Some(state.channel_id.clone()),
-            task,
+            &worker_task,
             system_prompt,
             state.deps.clone(),
             browser_config,
@@ -1003,7 +1022,7 @@ async fn spawn_worker_inner(
                 .autonomy_run
                 .as_ref()
                 .map(|autonomy_run| autonomy_run.run_id.as_str()),
-            origin_branch_id,
+            task_context.origin_branch_id,
         )
         .await
         .map_err(|error| AgentError::Other(anyhow::anyhow!(error)))?;
@@ -1078,7 +1097,7 @@ pub async fn spawn_opencode_worker_from_state(
     directory: &str,
     interactive: bool,
     required_skills: &[&str],
-    origin_branch_id: Option<BranchId>,
+    task_context: WorkerTaskContext<'_>,
 ) -> std::result::Result<crate::WorkerId, AgentError> {
     if !interactive {
         return Err(AgentError::Other(anyhow::anyhow!(
@@ -1097,7 +1116,7 @@ pub async fn spawn_opencode_worker_from_state(
         directory,
         interactive,
         required_skills,
-        origin_branch_id,
+        task_context,
     )
     .await;
 
@@ -1115,7 +1134,7 @@ async fn spawn_opencode_worker_inner(
     directory: &str,
     interactive: bool,
     required_skills: &[&str],
-    origin_branch_id: Option<BranchId>,
+    task_context: WorkerTaskContext<'_>,
 ) -> std::result::Result<crate::WorkerId, AgentError> {
     let directory = expand_tilde(directory);
 
@@ -1148,6 +1167,12 @@ async fn spawn_opencode_worker_inner(
     // info (time, model, context window) as builtin workers.
     let mut worker_status_text = build_worker_status_text(rc.as_ref(), &state.deps.sandbox);
 
+    let task_management = crate::prompts::text::get("fragments/opencode_task_management").trim();
+    worker_status_text = Some(match worker_status_text {
+        Some(existing) => format!("{existing}\n\n{task_management}"),
+        None => task_management.to_string(),
+    });
+
     // OpenCode reads files natively, so required skills arrive as read-first
     // file references in the system prompt rather than inlined content.
     if !required_skills.is_empty() {
@@ -1177,11 +1202,12 @@ async fn spawn_opencode_worker_inner(
         }
     }
 
+    let worker_task = worker_task_prompt(task, task_context.task_context);
     let worker = if interactive {
         let (worker, input_tx) = crate::opencode::OpenCodeWorker::new_interactive(
             Some(state.channel_id.clone()),
             state.deps.agent_id.clone(),
-            task,
+            &worker_task,
             directory,
             server_pool,
             state.deps.event_tx.clone(),
@@ -1207,7 +1233,7 @@ async fn spawn_opencode_worker_inner(
         let worker = crate::opencode::OpenCodeWorker::new(
             Some(state.channel_id.clone()),
             state.deps.agent_id.clone(),
-            task,
+            &worker_task,
             directory,
             server_pool,
             state.deps.event_tx.clone(),
@@ -1241,7 +1267,7 @@ async fn spawn_opencode_worker_inner(
                 .autonomy_run
                 .as_ref()
                 .map(|autonomy_run| autonomy_run.run_id.as_str()),
-            origin_branch_id,
+            task_context.origin_branch_id,
         )
         .await
         .map_err(|error| AgentError::Other(anyhow::anyhow!(error)))?;
@@ -2241,7 +2267,7 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
 mod tests {
     use super::{
         WorkerCompletionError, WorkerOutcome, commit_worker_outcome, map_worker_completion,
-        spawn_worker_task,
+        spawn_worker_task, worker_task_prompt,
     };
     use crate::conversation::{
         ProcessRunLogger, WorkerLifecycle, WorkerOutcomeKind, WorkerTerminalOwner,
@@ -2252,6 +2278,18 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::broadcast;
     use uuid::Uuid;
+
+    #[test]
+    fn task_context_is_appended_to_the_worker_message() {
+        let prompt = worker_task_prompt(
+            "Audit task #31 without writes.",
+            Some("## Runtime-Injected Task Context\n\n```json\n{}\n```"),
+        );
+
+        assert!(prompt.starts_with("Audit task #31 without writes."));
+        assert!(prompt.contains("## Runtime-Injected Task Context"));
+        assert!(prompt.ends_with("```json\n{}\n```"));
+    }
 
     async fn setup_worker(worker_id: WorkerId, channel_id: &str) -> ProcessRunLogger {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
