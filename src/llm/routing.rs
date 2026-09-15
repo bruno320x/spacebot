@@ -140,8 +140,10 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         || lower.contains("internal error")
         // Empty/malformed responses are transient provider issues
         || lower.contains("empty response")
+        || lower.contains("empty output array")
         || lower.contains("failed to read response body")
         || lower.contains("error decoding response body")
+<<<<<<< ours
         // SSE stream cut off before its terminal event
         || lower.contains("missing response.completed")
         // Provider-side internal panics relayed in-band (e.g. a gateway's own
@@ -229,6 +231,13 @@ pub fn is_tool_history_mismatch_error(error_message: &str) -> bool {
             && lower.contains("without")
             && lower.contains("tool call"))
         || (lower.contains("function call output") && lower.contains("call_id"))
+=======
+        // SSE stream failures (truncated, incomplete, server closed early)
+        || lower.contains("stream was empty")
+        || lower.contains("stream ended without")
+        || lower.contains("stream may have been truncated")
+        || lower.contains("model run incomplete")
+>>>>>>> theirs
 }
 
 /// Whether a completion error indicates context window overflow.
