@@ -635,8 +635,12 @@ async fn process_chunk(
         None,
         deps.event_tx.clone(),
     )
+<<<<<<< ours
     .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
     let hook = hook.with_memory_persistence_contract(contract_state.clone());
+=======
+    .with_memory_persistence_contract(contract_state.clone());
+>>>>>>> theirs
 
     let user_prompt =
         prompt_engine.render_system_ingestion_chunk(filename, chunk_number, total_chunks, chunk)?;
