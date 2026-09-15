@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useCortexChat, type ToolActivity} from "@/hooks/useCortexChat";
+import {useStickToBottom} from "@/hooks/useStickToBottom";
 import {Markdown} from "@/components/Markdown";
 import {ToolCall, type ToolCallPair} from "@/components/ToolCall";
 import {
@@ -383,6 +384,11 @@ export function CortexChatPanel({
 	} = useCortexChat(agentId, channelId, {freshThread: !!initialPrompt});
 	const [input, setInput] = useState("");
 	const [threadListOpen, setThreadListOpen] = useState(false);
+<<<<<<< ours
+=======
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const contentRef = useRef<HTMLDivElement>(null);
+>>>>>>> theirs
 	const initialPromptSentRef = useRef(false);
 
 	// Auto-send initial prompt once the fresh thread is ready
@@ -399,6 +405,7 @@ export function CortexChatPanel({
 		}
 	}, [initialPrompt, threadId, isStreaming, messages.length, sendMessage]);
 
+<<<<<<< ours
 	type ChatRow =
 		| {kind: "message"; id: string; message: (typeof messages)[number]}
 		| {kind: "streaming"}
@@ -414,6 +421,9 @@ export function CortexChatPanel({
 		if (error) list.push({kind: "error", message: error});
 		return list;
 	}, [messages, isStreaming, error]);
+=======
+	useStickToBottom(scrollRef, contentRef);
+>>>>>>> theirs
 
 	const handleSubmit = () => {
 		const trimmed = input.trim();
@@ -481,6 +491,7 @@ export function CortexChatPanel({
 			)}
 
 			{/* Messages */}
+<<<<<<< ours
 			<div className="min-h-0 flex-1">
 				<ChatMessageList<ChatRow>
 					messages={rows}
@@ -506,6 +517,16 @@ export function CortexChatPanel({
 								<div className="px-3 pb-5">
 									<div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-sm text-red-400">
 										{row.message}
+=======
+			<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+				<div ref={contentRef} className="flex flex-col gap-5 p-3 pb-4">
+					{messages.map((message) => (
+						<div key={message.id}>
+							{message.role === "user" ? (
+								<div className="flex justify-end">
+									<div className="max-w-[85%] rounded-2xl rounded-br-md bg-app-hover/30 px-3 py-2">
+										<p className="text-sm text-ink">{message.content}</p>
+>>>>>>> theirs
 									</div>
 								</div>
 							);
@@ -518,6 +539,7 @@ export function CortexChatPanel({
 										<div className="max-w-[85%] rounded-2xl rounded-br-md bg-app-hover/30 px-3 py-2">
 											<p className="text-sm text-ink">{message.content}</p>
 										</div>
+<<<<<<< ours
 									</div>
 								) : (
 									<div className="flex flex-col gap-2">
@@ -542,6 +564,30 @@ export function CortexChatPanel({
 						);
 					}}
 				/>
+=======
+									)}
+								</div>
+							)}
+						</div>
+					))}
+
+					{/* Streaming state */}
+					{isStreaming && (
+						<div>
+							<ToolActivityIndicator activity={toolActivity} />
+							{!toolActivity.some((t) => t.status === "running") && (
+								<ThinkingIndicator />
+							)}
+						</div>
+					)}
+
+					{error && (
+						<div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5 text-sm text-red-400">
+							{error}
+						</div>
+					)}
+				</div>
+>>>>>>> theirs
 			</div>
 
 			{messages.length === 0 && !isStreaming && (
