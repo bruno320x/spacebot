@@ -1,0 +1,67 @@
+name: Rust Port Diagnostic
+
+on:
+  push:
+    branches:
+      - port/upstream-653-agent-worker-registry
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: /tmp/spacebot-test-embedding-cache
+          key: fastembed-onnx-v1
+
+      - name: Project preflight
+        run: ./scripts/preflight.sh --ci
+
+      - name: Capture full PR gate diagnostics
+        shell: bash
+        run: |
+          set +e
+          ./scripts/gate-pr.sh --ci > rust-gate.log 2>&1
+          status=$?
+          {
+            echo "gate_exit_code=$status"
+            echo
+            grep -nE '(^|[^[:alnum:]_])(error(\[[^]]+\])?:|could not compile|test result: FAILED|failures:|FAILED|panicked at)' rust-gate.log || true
+          } > rust-errors.log
+          tail -n 300 rust-gate.log > rust-tail.log
+          exit 0
+
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-port-diagnostics
+          path: |
+            rust-errors.log
+            rust-tail.log
+            rust-gate.log
+          retention-days: 1
