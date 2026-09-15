@@ -483,6 +483,7 @@ impl SpacebotHook {
         }
     }
 
+<<<<<<< ours
     /// Timeout for a single LLM completion call.
     ///
     /// Prevents a hung API connection from blocking a branch, compactor,
@@ -490,6 +491,13 @@ impl SpacebotHook {
     /// generous for complex completions but catches genuine connection
     /// stalls. Provider-level timeouts (reqwest 120s, stream 30min) are too
     /// far from the caller to unblock a stuck turn.
+=======
+    /// Timeout for a single LLM completion call (non-streaming).
+    ///
+    /// Prevents a hung API connection from blocking a branch, compactor, or
+    /// ingestion process indefinitely. Set to 5 minutes — generous for complex
+    /// completions but catches genuine connection stalls.
+>>>>>>> theirs
     const LLM_CALL_TIMEOUT_SECS: u64 = 300;
 
     /// Prompt once with the hook attached and no retry loop.
@@ -512,6 +520,7 @@ impl SpacebotHook {
                 .with_hook(self.clone()),
         )
         .await
+<<<<<<< ours
         .map_err(|_| {
             PromptError::CompletionError(rig::completion::CompletionError::from(Box::new(
                 std::io::Error::new(
@@ -524,6 +533,16 @@ impl SpacebotHook {
             )
                 as Box<dyn std::error::Error + Send + Sync + 'static>))
         })?
+=======
+        .map_err(|_| PromptError::CompletionError(
+            rig::completion::CompletionError::from(
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("LLM call timed out after {}s (prompt_once)", Self::LLM_CALL_TIMEOUT_SECS)
+                )) as Box<dyn std::error::Error + Send + Sync>
+            )
+        ))?
+>>>>>>> theirs
     }
 
     /// Prompt once using Rig's streaming path so text/tool deltas reach the hook.
@@ -588,6 +607,7 @@ impl SpacebotHook {
                 ),
             )
             .await
+<<<<<<< ours
             .map_err(|_| {
                 PromptError::CompletionError(rig::completion::CompletionError::from(Box::new(
                     std::io::Error::new(
@@ -600,6 +620,16 @@ impl SpacebotHook {
                 )
                     as Box<dyn std::error::Error + Send + Sync + 'static>))
             })?
+=======
+            .map_err(|_| PromptError::CompletionError(
+                rig::completion::CompletionError::from(
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("LLM stream_completion request timed out after {}s", Self::LLM_CALL_TIMEOUT_SECS)
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                )
+            ))?
+>>>>>>> theirs
             .map_err(PromptError::CompletionError)?;
 
             let mut stream = request
