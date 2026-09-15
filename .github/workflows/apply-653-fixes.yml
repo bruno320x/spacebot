@@ -1,0 +1,66 @@
+name: Apply 653 Compile Fixes
+
+on:
+  push:
+    branches:
+      - port/upstream-653-agent-worker-registry
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  reconcile:
+    if: github.event.head_commit.message != 'fix: reconcile #653 compile contracts'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Apply exact semantic reconciliation
+        run: python3 .github/integration/fix-653-compile.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Compile every target with warnings denied
+        run: cargo check --all-targets --locked
+
+      - name: Verify removed contracts stay removed
+        shell: bash
+        run: |
+          set -eu
+          ! grep -R -n 'WorkerTaskControl' src
+          ! grep -R -n 'WorkerInitialResult' src
+          grep -q 'WorkerBackend::Acp' src/agent/process_control.rs
+          grep -q 'worker_registration_id: self.callback.registration_id' src/acp/worker.rs
+
+      - name: Commit validated reconciliation
+        shell: bash
+        run: |
+          set -eu
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
+          git commit -m 'fix: reconcile #653 compile contracts'
+          git push origin HEAD:port/upstream-653-agent-worker-registry
