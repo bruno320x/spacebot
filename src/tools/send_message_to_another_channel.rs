@@ -196,6 +196,7 @@ impl Tool for SendMessageTool {
         // Check for explicit signal: prefix first - always honored regardless of current adapter.
         // This allows users to explicitly target Signal even when in Discord/Telegram/etc.
         if let Some(mut target) = parse_explicit_signal_prefix(&args.target) {
+<<<<<<< ours
             // If explicit prefix returned default "signal" adapter, try to resolve
             // to a specific named instance for correct routing.
             if target.adapter == "signal" {
@@ -205,6 +206,18 @@ impl Tool for SendMessageTool {
                 )
                 .await
                 .map_err(SendMessageError)?;
+=======
+            // If explicit prefix returned default "signal" adapter but we're in a named
+            // Signal adapter conversation (e.g., signal:gvoice1), use the current adapter
+            // to ensure the message goes through the correct account.
+            if target.adapter == "signal"
+                && let Some(current_adapter) = self
+                    .current_adapter
+                    .as_ref()
+                    .filter(|adapter| adapter.starts_with("signal:"))
+            {
+                target.adapter = current_adapter.clone();
+>>>>>>> theirs
             }
 
             self.messaging_manager
@@ -235,6 +248,7 @@ impl Tool for SendMessageTool {
         if let Some(current_adapter) = self
             .current_adapter
             .as_ref()
+<<<<<<< ours
             .filter(|adapter| *adapter == "signal" || adapter.starts_with("signal:"))
         {
             // Verify the cached adapter is still registered before using it.
@@ -288,6 +302,31 @@ impl Tool for SendMessageTool {
                     }
                 }
             }
+=======
+            .filter(|adapter| adapter.starts_with("signal"))
+            && let Some(target) = parse_implicit_signal_shorthand(&args.target, current_adapter)
+        {
+            self.messaging_manager
+                .broadcast(
+                    &target.adapter,
+                    &target.target,
+                    crate::OutboundResponse::Text(args.message),
+                )
+                .await
+                .map_err(|error| SendMessageError(format!("failed to send message: {error}")))?;
+
+            tracing::info!(
+                adapter = %target.adapter,
+                broadcast_target = %"[REDACTED]",
+                "message sent via implicit Signal shorthand"
+            );
+
+            return Ok(SendMessageOutput {
+                success: true,
+                target: target.target,
+                platform: target.adapter,
+            });
+>>>>>>> theirs
         }
 
         // Check for explicit email target
