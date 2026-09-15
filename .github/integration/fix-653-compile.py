@@ -97,6 +97,13 @@ replace_exact(
     "",
 )
 
+# The integration test still constructed the removed legacy control map.
+replace_exact(
+    "tests/context_dump.rs",
+    "        detached_workers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),\n",
+    "",
+)
+
 # ACP permissions use the same registration-aware interaction routing as
 # OpenCode. The active operation is authoritative for the delivery target.
 replace_exact(
