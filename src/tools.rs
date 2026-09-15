@@ -67,8 +67,12 @@ pub mod set_home_channel;
 pub mod set_outcome;
 pub mod set_status;
 pub mod shell;
+<<<<<<< ours
 pub mod skill_manage;
 pub mod skills_list;
+=======
+pub mod shell_analysis;
+>>>>>>> theirs
 pub mod skills_search;
 pub mod skip;
 pub mod spacebot_docs;
@@ -175,11 +179,17 @@ pub use set_home_channel::{
 pub use set_outcome::{SetOutcomeArgs, SetOutcomeError, SetOutcomeOutput, SetOutcomeTool};
 pub use set_status::{SetStatusArgs, SetStatusError, SetStatusOutput, SetStatusTool, StatusKind};
 pub use shell::{EnvVar, ShellArgs, ShellError, ShellOutput, ShellResult, ShellTool};
+<<<<<<< ours
 pub use skill_manage::{
     SkillManageArgs, SkillManageError, SkillManageOutput, SkillManageTool, SkillReadTracker,
     new_skill_read_tracker,
 };
 pub use skills_list::{SkillsListArgs, SkillsListError, SkillsListOutput, SkillsListTool};
+=======
+pub use shell_analysis::{
+    CommandAnalysis, CommandCategory, DetectedPattern, DurationHint, PatternType, RiskLevel,
+};
+>>>>>>> theirs
 pub use skills_search::{
     SkillsSearchArgs, SkillsSearchError, SkillsSearchOutput, SkillsSearchTool,
 };

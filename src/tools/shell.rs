@@ -1,6 +1,7 @@
 //! Shell tool for executing shell commands and subprocesses (task workers only).
 //!
 //! This is the unified execution tool — it replaces the previous `shell` + `exec`
+<<<<<<< ours
 //! split. Commands run through `sh -c` with optional per-command environment
 //! variables. Dangerous env vars that enable library injection are blocked.
 //!
@@ -11,6 +12,14 @@
 use crate::sandbox::Sandbox;
 use crate::tools::ToolCallRegistry;
 use crate::{AgentId, ChannelId, ProcessEvent, ProcessId};
+=======
+//! split. Commands are analyzed before execution, then run through `sh -c` with
+//! optional per-command environment variables. Dangerous env vars that enable
+//! library injection are blocked.
+
+use crate::sandbox::Sandbox;
+use crate::tools::shell_analysis::{CommandAnalysis, ShellAnalyzer};
+>>>>>>> theirs
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use schemars::JsonSchema;
@@ -31,15 +40,20 @@ const EXIT_CODE_WAITING_FOR_INPUT: i32 = -2;
 pub struct ShellTool {
     workspace: PathBuf,
     sandbox: Arc<Sandbox>,
+<<<<<<< ours
     tool_output_tx: Option<tokio::sync::broadcast::Sender<ProcessEvent>>,
     process_id: Option<ProcessId>,
     channel_id: Option<ChannelId>,
     agent_id: Option<AgentId>,
     tool_call_registry: Option<ToolCallRegistry>,
+=======
+    analyzer: ShellAnalyzer,
+>>>>>>> theirs
 }
 
 impl ShellTool {
     pub fn new(workspace: PathBuf, sandbox: Arc<Sandbox>) -> Self {
+<<<<<<< ours
         Self {
             workspace,
             sandbox,
@@ -66,6 +80,15 @@ impl ShellTool {
         self.agent_id = Some(agent_id);
         self.tool_call_registry = Some(tool_call_registry);
         self
+=======
+        let analyzer = ShellAnalyzer::new(workspace.clone());
+
+        Self {
+            workspace,
+            sandbox,
+            analyzer,
+        }
+>>>>>>> theirs
     }
 }
 
@@ -106,6 +129,7 @@ pub struct ShellOutput {
     pub stdout: String,
     pub stderr: String,
     pub summary: String,
+<<<<<<< ours
     #[serde(default)]
     pub waiting_for_input: bool,
 }
@@ -231,6 +255,10 @@ fn spawn_quiesce_watchdog(
             }
         }
     })
+=======
+    /// Pre-execution analysis metadata for UI and worker logic.
+    pub analysis: CommandAnalysis,
+>>>>>>> theirs
 }
 
 impl Tool for ShellTool {
@@ -366,6 +394,26 @@ impl Tool for ShellTool {
             }
         }
 
+<<<<<<< ours
+=======
+        let analysis = self.analyzer.analyze(&args.command, &working_dir);
+        if analysis.requires_confirmation {
+            return Err(ShellError {
+                message: format!(
+                    "Command requires confirmation: {}",
+                    analysis
+                        .confirmation_reason
+                        .as_deref()
+                        .unwrap_or("the command was flagged as risky before execution")
+                ),
+                exit_code: -1,
+            });
+        }
+
+        // Build per-command env map for sandbox-aware injection. The sandbox
+        // injects these via --setenv (bubblewrap) or .env() (other backends),
+        // so they always reach the inner sandboxed process.
+>>>>>>> theirs
         let command_env: std::collections::HashMap<String, String> = args
             .env
             .into_iter()
@@ -388,6 +436,7 @@ impl Tool for ShellTool {
             return run_batch(cmd, timeout).await;
         }
 
+<<<<<<< ours
         run_streaming(
             cmd,
             timeout,
@@ -587,11 +636,42 @@ async fn run_streaming(
     })
 }
 
+=======
+        let stdout = crate::tools::truncate_output(
+            &String::from_utf8_lossy(&output.stdout),
+            crate::tools::MAX_TOOL_OUTPUT_BYTES,
+        );
+        let stderr = crate::tools::truncate_output(
+            &String::from_utf8_lossy(&output.stderr),
+            crate::tools::MAX_TOOL_OUTPUT_BYTES,
+        );
+        let exit_code = output.status.code().unwrap_or(-1);
+        let success = output.status.success();
+
+        let summary = format_shell_output(exit_code, &stdout, &stderr, analysis.expects_no_output);
+
+        Ok(ShellOutput {
+            success,
+            exit_code,
+            stdout,
+            stderr,
+            summary,
+            analysis,
+        })
+    }
+}
+
+/// Format shell output for display.
+>>>>>>> theirs
 fn format_shell_output(
     exit_code: i32,
     stdout: &str,
     stderr: &str,
+<<<<<<< ours
     waiting_for_input: bool,
+=======
+    expects_no_output: bool,
+>>>>>>> theirs
 ) -> String {
     let mut output = String::new();
 
@@ -634,7 +714,11 @@ fn format_shell_output(
     }
 
     if stdout.is_empty() && stderr.is_empty() {
-        output.push_str("\n[No output]\n");
+        if exit_code == 0 && expects_no_output {
+            output.push_str("\nDone\n");
+        } else {
+            output.push_str("\n[No output]\n");
+        }
     }
 
     output
