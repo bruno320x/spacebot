@@ -117,6 +117,7 @@ pub struct ChannelPromptInputs {
     pub channel_activity_map: Option<String>,
     pub participant_context: Option<String>,
     pub active_goals: Option<String>,
+    pub active_recall_context: Option<String>,
     pub execution_mode: String,
     pub authority: String,
 }
@@ -140,6 +141,7 @@ impl ChannelPromptInputs {
             .text("channel_activity_map", self.channel_activity_map)
             .text("participant_context", self.participant_context)
             .text("active_goals", self.active_goals)
+            .text("active_recall_context", self.active_recall_context)
             .text("execution_mode", Some(self.execution_mode))
             .text("authority", Some(self.authority))
             .inline("agent_links", self.agent_links)
@@ -206,6 +208,7 @@ impl PromptEngine {
             "memory_persistence",
             crate::prompts::text::get("memory_persistence"),
         )?;
+        env.add_template("active_recall", crate::prompts::text::get("active_recall"))?;
         env.add_template("ingestion", crate::prompts::text::get("ingestion"))?;
         env.add_template("cortex_chat", crate::prompts::text::get("cortex_chat"))?;
         env.add_template(
@@ -1249,6 +1252,18 @@ mod tests {
             strip_system_prompt_cache_boundary(&prompt),
             "stable\n\nvolatile"
         );
+    }
+
+    #[test]
+    fn active_recall_is_below_cache_boundary() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+        let mut inputs = base_inputs(&engine);
+        inputs.active_recall_context = Some("- Prior decision: use SQLite.".to_string());
+        let prompt = engine.render_channel_prompt(inputs).unwrap().text;
+        let (stable, volatile) = split_system_prompt_cache_boundary(&prompt).unwrap();
+        assert!(!stable.contains("Prior decision: use SQLite."));
+        assert!(volatile.contains("## Background Recall (READ-ONLY CONTEXT)"));
+        assert!(volatile.contains("Prior decision: use SQLite."));
     }
 
     /// The block map must describe the prompt that would have been sent

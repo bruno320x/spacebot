@@ -2,7 +2,7 @@
 
 use crate::agent::channel_attachments;
 use crate::agent::channel_attachments::download_attachments;
-use crate::agent::channel_dispatch::spawn_memory_persistence_branch;
+use crate::agent::channel_dispatch::{spawn_active_recall_branch, spawn_memory_persistence_branch};
 use crate::agent::channel_history::{
     apply_history_after_turn, event_is_for_channel, extract_message_id,
     extract_reply_from_tool_syntax, format_batched_user_message, format_user_message,
@@ -66,6 +66,42 @@ struct PendingResult {
 }
 
 const EVENT_LAG_WARNING_INTERVAL_SECS: u64 = 30;
+const MAX_ACTIVE_RECALL_NOTES: usize = 3;
+const MAX_ACTIVE_RECALL_NOTE_CHARS: usize = 800;
+const ACTIVE_RECALL_INLINE_WAIT_MS: u64 = 750;
+const ACTIVE_RECALL_CUES: &[&str] = &[
+    "remember",
+    "last time",
+    "that thing",
+    "the thing",
+    "what did we decide",
+    "what'd we decide",
+    "what did i decide",
+    "what did you decide",
+    "what was the decision",
+    "what's the decision",
+    "what were we doing",
+    "where did we leave off",
+    "where were we",
+    "previously",
+    "earlier",
+    "before",
+    "we talked about",
+    "we discussed",
+    "remind me",
+    "remind us",
+];
+const RAW_ACTIVE_RECALL_MARKERS: &[&str] = &[
+    "## relevant memories",
+    "importance:",
+    "relevance:",
+    "relevance_score",
+    "memory_id",
+    "\"id\"",
+    "\"memories\"",
+    "created_at",
+    "total_found",
+];
 /// Ceiling on messages restored into live history when a channel starts. The
 /// compactor and chronicler trim from there under their own thresholds.
 const HYDRATE_MESSAGE_LIMIT: i64 = 200;
@@ -335,6 +371,68 @@ fn parse_branch_cancellation_reason(conclusion: &str) -> Option<&str> {
         return Some(rest);
     }
     None
+}
+
+fn silent_branch_completion(
+    event: &ProcessEvent,
+    memory_persistence_branches: &HashSet<BranchId>,
+    active_recall_branches: &HashSet<BranchId>,
+) -> Option<BranchId> {
+    match event {
+        ProcessEvent::BranchResult { branch_id, .. }
+            if memory_persistence_branches.contains(branch_id)
+                || active_recall_branches.contains(branch_id) =>
+        {
+            Some(*branch_id)
+        }
+        _ => None,
+    }
+}
+
+fn should_trigger_active_recall(raw_text: &str) -> bool {
+    let normalized = raw_text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    normalized.len() >= 8
+        && ACTIVE_RECALL_CUES
+            .iter()
+            .any(|cue| normalized.contains(cue))
+}
+
+fn active_recall_note_contains_raw_rows(note: &str) -> bool {
+    let lower = note.to_ascii_lowercase();
+    RAW_ACTIVE_RECALL_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn parse_active_recall_conclusion(conclusion: &str) -> Option<String> {
+    let trimmed = conclusion.trim();
+    if trimmed == "NONE" {
+        return None;
+    }
+    let note = trimmed.strip_prefix("BACKGROUND_NOTE:")?.trim();
+    if note.is_empty() || active_recall_note_contains_raw_rows(note) {
+        return None;
+    }
+    if note.len() > MAX_ACTIVE_RECALL_NOTE_CHARS {
+        let boundary = note.floor_char_boundary(MAX_ACTIVE_RECALL_NOTE_CHARS);
+        Some(format!("{}... [truncated]", &note[..boundary]))
+    } else {
+        Some(note.to_string())
+    }
+}
+
+fn merge_active_recall_context(existing: Option<String>, next: String) -> Option<String> {
+    if next.trim().is_empty() {
+        return existing;
+    }
+    match existing {
+        Some(existing) if !existing.trim().is_empty() => Some(format!("{existing}\n{next}")),
+        _ => Some(next),
+    }
 }
 
 fn sentence_contains_decision_marker(sentence: &str) -> bool {
@@ -1074,6 +1172,10 @@ pub struct Channel {
     last_reflection_at: Option<std::time::Instant>,
     /// Branch IDs for silent memory persistence branches (results not injected into history).
     memory_persistence_branches: HashSet<BranchId>,
+    /// Branch IDs for silent active-recall branches.
+    active_recall_branches: HashSet<BranchId>,
+    /// Accepted recall notes waiting for a live channel turn.
+    active_recall_notes: Vec<String>,
     /// Optional Discord reply target captured when each branch was started.
     branch_reply_targets: HashMap<BranchId, String>,
     /// Buffer for coalescing rapid-fire messages.
@@ -1326,6 +1428,8 @@ impl Channel {
             last_persistence_at: std::time::Instant::now(),
             memory_persistence_due_at: None,
             memory_persistence_branches: HashSet::new(),
+            active_recall_branches: HashSet::new(),
+            active_recall_notes: Vec::new(),
             reflection_signal: std::sync::Mutex::new(ReflectionSignal::default()),
             last_reflection_at: None,
             branch_reply_targets: HashMap::new(),
@@ -2860,14 +2964,24 @@ impl Channel {
             }
         }
 
-        let system_prompt = self.build_system_prompt_segmented().await?;
+        let is_retrigger = message.source == "system";
+        let mut active_recall_context = self.take_active_recall_context();
+        if let Some(branch_id) = self
+            .maybe_spawn_active_recall(&rewritten_text, is_retrigger)
+            .await
+            && let Some(inline_context) = self.wait_for_active_recall_context(branch_id).await
+        {
+            active_recall_context =
+                merge_active_recall_context(active_recall_context, inline_context);
+        }
+        let system_prompt = self
+            .build_system_prompt_segmented_with_recall(active_recall_context)
+            .await?;
 
         {
             let mut reply_target = self.state.reply_target_message_id.write().await;
             *reply_target = extract_message_id(&message);
         }
-
-        let is_retrigger = message.source == "system";
         let attachment_content = if !attachments.is_empty() {
             if let Some(ref saved_data) = saved_attachment_data {
                 // Reuse already-downloaded bytes for images/text; audio still
@@ -3361,6 +3475,86 @@ impl Channel {
         info
     }
 
+    async fn maybe_spawn_active_recall(
+        &mut self,
+        latest_user_message: &str,
+        is_retrigger: bool,
+    ) -> Option<BranchId> {
+        if is_retrigger
+            || matches!(self.resolved_settings.memory, MemoryMode::Off)
+            || !should_trigger_active_recall(latest_user_message)
+            || !self.active_recall_branches.is_empty()
+        {
+            return None;
+        }
+
+        match spawn_active_recall_branch(&self.state, latest_user_message).await {
+            Ok(branch_id) => {
+                self.active_recall_branches.insert(branch_id);
+                tracing::info!(channel_id = %self.id, branch_id = %branch_id, "active recall spawned");
+                Some(branch_id)
+            }
+            Err(error) => {
+                tracing::debug!(channel_id = %self.id, %error, "active recall skipped");
+                None
+            }
+        }
+    }
+
+    async fn wait_for_active_recall_context(&mut self, branch_id: BranchId) -> Option<String> {
+        let timeout = std::time::Duration::from_millis(ACTIVE_RECALL_INLINE_WAIT_MS);
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                match recv_channel_event(&mut self.event_rx).await {
+                    crate::BroadcastRecvResult::Event(event) => {
+                        if !should_process_event_for_channel(&event, &self.id) {
+                            continue;
+                        }
+                        let target = matches!(
+                            &event,
+                            ProcessEvent::BranchResult { branch_id: completed, .. }
+                                if *completed == branch_id
+                        );
+                        if let Err(error) = self.handle_event(event).await {
+                            tracing::error!(channel_id = %self.id, branch_id = %branch_id, %error, "active recall event handling failed");
+                            return None;
+                        }
+                        if target {
+                            return self.take_active_recall_context();
+                        }
+                    }
+                    crate::BroadcastRecvResult::Lagged(skipped) => {
+                        tracing::warn!(channel_id = %self.id, skipped, "active recall wait lagged; deferring context");
+                    }
+                    crate::BroadcastRecvResult::Closed => return None,
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(context) => context,
+            Err(_) => {
+                tracing::debug!(channel_id = %self.id, branch_id = %branch_id, wait_ms = ACTIVE_RECALL_INLINE_WAIT_MS, "active recall deferred to next turn");
+                None
+            }
+        }
+    }
+
+    fn take_active_recall_context(&mut self) -> Option<String> {
+        if self.active_recall_notes.is_empty() {
+            return None;
+        }
+        let notes = std::mem::take(&mut self.active_recall_notes);
+        Some(
+            notes
+                .into_iter()
+                .map(|note| format!("- {note}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
     /// Build the channel's full system prompt: template, identity, memory
     /// layers, status block, skills, tool notes.
     ///
@@ -3375,6 +3569,13 @@ impl Channel {
     /// is assembled from.
     pub async fn build_system_prompt_segmented(
         &self,
+    ) -> crate::error::Result<crate::prompts::SegmentedPrompt> {
+        self.build_system_prompt_segmented_with_recall(None).await
+    }
+
+    async fn build_system_prompt_segmented_with_recall(
+        &self,
+        active_recall_context: Option<String>,
     ) -> crate::error::Result<crate::prompts::SegmentedPrompt> {
         let rc = &self.deps.runtime_config;
         let prompt_engine = rc.prompts.load();
@@ -3468,6 +3669,7 @@ impl Channel {
                 channel_activity_map: empty_to_none(channel_activity_map),
                 participant_context: empty_to_none(participant_context),
                 active_goals,
+                active_recall_context,
                 execution_mode,
                 authority,
             })?;
@@ -4189,10 +4391,18 @@ impl Channel {
         if !event_is_for_channel(&event, &self.id) {
             return Ok(());
         }
-        // Update status block
+        let silent_completion = silent_branch_completion(
+            &event,
+            &self.memory_persistence_branches,
+            &self.active_recall_branches,
+        );
         {
             let mut status = self.state.status_block.write().await;
-            status.update(&event);
+            if let Some(branch_id) = silent_completion {
+                status.remove_branch(branch_id);
+            } else {
+                status.update(&event);
+            }
         }
 
         let mut should_retrigger = false;
@@ -4238,11 +4448,12 @@ impl Channel {
                     .remove(branch_id)
                     .is_some();
                 let was_memory_persistence = self.memory_persistence_branches.remove(branch_id);
+                let was_active_recall = self.active_recall_branches.remove(branch_id);
                 if !was_active {
-                    if was_memory_persistence {
+                    if was_memory_persistence || was_active_recall {
                         tracing::info!(
                             branch_id = %branch_id,
-                            "stale memory-persistence branch completion ignored"
+                            "stale silent branch completion ignored"
                         );
                     }
                     self.branch_reply_targets.remove(branch_id);
@@ -4260,6 +4471,21 @@ impl Channel {
                 // happened inside the branch via tool calls.
                 if was_memory_persistence {
                     tracing::info!(branch_id = %branch_id, "memory persistence branch completed");
+                } else if was_active_recall {
+                    if let Some(note) = parse_active_recall_conclusion(conclusion) {
+                        self.active_recall_notes.push(note);
+                        if self.active_recall_notes.len() > MAX_ACTIVE_RECALL_NOTES {
+                            let overflow = self.active_recall_notes.len() - MAX_ACTIVE_RECALL_NOTES;
+                            self.active_recall_notes.drain(..overflow);
+                        }
+                        tracing::info!(
+                            branch_id = %branch_id,
+                            note_count = self.active_recall_notes.len(),
+                            "active recall note queued"
+                        );
+                    } else {
+                        tracing::debug!(branch_id = %branch_id, "active recall produced no injectable note");
+                    }
                 } else {
                     // Regular branch: accumulate result for the next retrigger.
                     // The result text will be embedded directly in the retrigger
@@ -5072,6 +5298,51 @@ fn is_dm_conversation_id(conv_id: &str) -> bool {
                 .rsplit(':')
                 .next()
                 .is_some_and(|last| last.starts_with('D'))
+}
+
+#[cfg(test)]
+mod active_recall_unit_tests {
+    use super::{
+        merge_active_recall_context, parse_active_recall_conclusion, should_trigger_active_recall,
+    };
+
+    #[test]
+    fn recall_cues_are_selective() {
+        assert!(should_trigger_active_recall(
+            "what did we decide about OAuth last time?"
+        ));
+        assert!(should_trigger_active_recall(
+            "remind me what we discussed before"
+        ));
+        assert!(!should_trigger_active_recall("run the tests now"));
+        assert!(!should_trigger_active_recall("ok"));
+    }
+
+    #[test]
+    fn recall_output_is_fenced_and_raw_rows_are_rejected() {
+        assert_eq!(parse_active_recall_conclusion("NONE"), None);
+        assert_eq!(
+            parse_active_recall_conclusion("BACKGROUND_NOTE: Use the prior OAuth decision."),
+            Some("Use the prior OAuth decision.".to_string())
+        );
+        assert_eq!(
+            parse_active_recall_conclusion(
+                "BACKGROUND_NOTE: ## Relevant Memories importance: 0.9 memory_id: abc"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn recall_context_merges_without_changing_role() {
+        assert_eq!(
+            merge_active_recall_context(
+                Some("- Existing note".to_string()),
+                "- Inline note".to_string(),
+            ),
+            Some("- Existing note\n- Inline note".to_string())
+        );
+    }
 }
 
 #[cfg(test)]

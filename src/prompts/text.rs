@@ -72,6 +72,7 @@ fn lookup(lang: &str, key: &str) -> &'static str {
         }
         ("en", "chronicle_rollup") => include_str!("../../prompts/en/chronicle_rollup.md.j2"),
         ("en", "memory_persistence") => include_str!("../../prompts/en/memory_persistence.md.j2"),
+        ("en", "active_recall") => include_str!("../../prompts/en/active_recall.md.j2"),
         ("en", "ingestion") => include_str!("../../prompts/en/ingestion.md.j2"),
         ("en", "cortex_chat") => include_str!("../../prompts/en/cortex_chat.md.j2"),
         ("en", "factory") => include_str!("../../prompts/en/factory.md.j2"),
