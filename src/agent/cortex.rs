@@ -978,11 +978,16 @@ fn signal_from_event(event: ProcessEvent) -> Option<Signal> {
         // UI-only events — no cortex signal needed. Chronicle checkpoints are
         // durable and reachable through the timeline and the chronicle tool,
         // so they do not also need a slot in the signal buffer.
+<<<<<<< ours
         ProcessEvent::ChannelSystemMessage { .. }
         | ProcessEvent::ChannelAssistantMessage { .. }
         | ProcessEvent::CompactionStarted { .. }
         | ProcessEvent::CompactionCompleted { .. }
         | ProcessEvent::ChronicleCheckpoint { .. }
+=======
+        ProcessEvent::ChronicleCheckpoint { .. }
+        | ProcessEvent::ReflectionRunCompleted { .. }
+>>>>>>> theirs
         | ProcessEvent::OpenCodeSessionCreated { .. }
         | ProcessEvent::OpenCodePartUpdated { .. }
         | ProcessEvent::WorkerInitialResult { .. }

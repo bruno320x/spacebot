@@ -2,6 +2,7 @@ import {useEffect, useMemo, useRef, useState} from "react";
 import {useQuery} from "@tanstack/react-query";
 import {ChatMessageList, InlineBranchCard, MessageBubble, type ChatMessageListHandle} from "@spacedrive/ai";
 import {File as FileIcon} from "@phosphor-icons/react";
+<<<<<<< ours
 import {
 	api,
 	type AttachmentMeta,
@@ -10,6 +11,9 @@ import {
 	type TimelineItem,
 	type WorkerListItem,
 } from "@/api/client";
+=======
+import {api, type AttachmentMeta, type TimelineBranchRun, type TimelineCheckpoint, type TimelineItem, type TimelineReflectionRun, type WorkerListItem} from "@/api/client";
+>>>>>>> theirs
 import {Markdown} from "@/components/Markdown";
 import {ToolCall, type ToolCallPair, tryParseJson, isErrorResult} from "@/components/ToolCall";
 import {PortalWorkerCard} from "./PortalWorkerCard";
@@ -20,6 +24,7 @@ import clsx from "clsx";
  * the span it covers and opens to the summary. Not a message — it was written
  * by neither side of the conversation.
  */
+<<<<<<< ours
 function InlineCheckpointCard({ item }: { item: TimelineCheckpoint }) {
   const [expanded, setExpanded] = useState(false);
   const from = new Date(item.covers_from);
@@ -62,6 +67,44 @@ function ConversationStartMarker({ createdAt }: { createdAt: string }) {
 		hour: "numeric",
 		minute: "2-digit",
 	});
+=======
+function InlineReflectionRunCard({item}: {item: TimelineReflectionRun}) {
+	const statusLabel =
+		item.status === "success" ? "Learned" :
+		item.status === "no_op" ? "No change" :
+		item.status === "error" ? "Error" :
+		"Reflection";
+	const statusColor =
+		item.status === "success" ? "text-green-11" :
+		item.status === "no_op" ? "text-ink-faint" :
+		item.status === "error" ? "text-red-11" :
+		"text-ink-dull";
+
+	return (
+		<div className="py-2">
+			<div className="flex w-full items-center gap-3">
+				<span className="h-px flex-1 bg-app-line/60" />
+				<span className={`flex-shrink-0 text-tiny ${statusColor}`}>
+					{statusLabel}
+					{item.outcome_summary ? `: ${item.outcome_summary}` : ""}
+				</span>
+				<span className="h-px flex-1 bg-app-line/60" />
+			</div>
+		</div>
+	);
+}
+
+function InlineCheckpointCard({item}: {item: TimelineCheckpoint}) {
+	const [expanded, setExpanded] = useState(false);
+	const from = new Date(item.covers_from);
+	const to = new Date(item.covers_to);
+	const day = (value: Date) =>
+		value.toLocaleDateString(undefined, {month: "short", day: "numeric"});
+	const range =
+		from.toDateString() === to.toDateString()
+			? day(from)
+			: `${day(from)} → ${day(to)}`;
+>>>>>>> theirs
 
 	return (
 		<div className="flex items-center gap-3 py-5">
@@ -375,6 +418,7 @@ export function PortalTimeline({
 	};
 
 	return (
+<<<<<<< ours
 		<ChatMessageList<TimelineRow>
 			className="flex-1"
 			handleRef={chatRef}
@@ -421,6 +465,90 @@ export function PortalTimeline({
 				);
 			}}
 		/>
+=======
+		<div ref={scrollRef} className="flex-1 overflow-x-hidden overflow-y-auto">
+			<div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-6 pb-[180px]">
+				{visibleItems.map((item) => {
+					if (item.type === "message") {
+						const attachments = item.attachments ?? [];
+						if (item.role === "user" && attachments.length > 0) {
+							return (
+								<UserMessageWithAttachments
+									key={item.id}
+									content={item.content}
+									attachments={attachments}
+									agentId={agentId}
+								/>
+							);
+						}
+						return (
+							<div key={item.id}>
+								<MessageBubble
+									content={item.content}
+									isUser={item.role === "user"}
+									onCopy={(content) => void copyMessage(content)}
+								/>
+								{attachments.length > 0 && (
+									<AssistantAttachments agentId={agentId} attachments={attachments} />
+								)}
+							</div>
+						);
+					}
+					if (item.type === "branch_run") {
+						return (
+							<div key={item.id} className="py-1">
+								<InlineBranchCard
+								description={(item as TimelineBranchRun).description}
+								completedAt={(item as TimelineBranchRun).completed_at ?? null}
+								conclusion={(item as TimelineBranchRun).conclusion}
+							/>
+							</div>
+						);
+					}
+					if (item.type === "worker_run") {
+						const worker =
+							conversationWorkers.find((w) => w.id === item.id) ??
+							synthesizeWorker(item, conversationId);
+						return (
+							<div key={item.id} className="py-2">
+								<PortalWorkerCard agentId={agentId} worker={worker} />
+							</div>
+						);
+					}
+					if (item.type === "tool_call_run") {
+						const parsedArgs = tryParseJson(item.args);
+						const parsedResult = item.result ? tryParseJson(item.result) : null;
+						const pair: ToolCallPair = {
+							id: item.id,
+							name: item.tool_name,
+							argsRaw: item.args,
+							args: parsedArgs,
+							resultRaw: item.result ?? null,
+							result: parsedResult,
+							status: item.status === "running"
+								? "running"
+								: item.result && isErrorResult(item.result, parsedResult)
+									? "error"
+									: "completed",
+						};
+						return (
+							<div key={item.id} className="py-1">
+								<ToolCall pair={pair} />
+							</div>
+						);
+					}
+					if ((item as Record<string, unknown>).type === "reflection_run") {
+						return <InlineReflectionRunCard key={item.id} item={item as unknown as TimelineReflectionRun} />;
+					}
+					if (item.type === "checkpoint") {
+						return <InlineCheckpointCard key={item.id} item={item} />;
+					}
+					return null;
+				})}
+				{isTyping && <ThinkingIndicator />}
+			</div>
+		</div>
+>>>>>>> theirs
 	);
 }
 
