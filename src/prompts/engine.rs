@@ -180,8 +180,24 @@ impl PromptEngine {
             crate::prompts::text::get("cortex_intraday_synthesis"),
         )?;
         env.add_template(
+            "cortex_intraday_synthesis_system",
+            crate::prompts::text::get("cortex_intraday_synthesis_system"),
+        )?;
+        env.add_template(
+            "cortex_intraday_synthesis_system_fallback",
+            crate::prompts::text::get("cortex_intraday_synthesis_system_fallback"),
+        )?;
+        env.add_template(
             "cortex_daily_summary",
             crate::prompts::text::get("cortex_daily_summary"),
+        )?;
+        env.add_template(
+            "cortex_daily_summary_system",
+            crate::prompts::text::get("cortex_daily_summary_system"),
+        )?;
+        env.add_template(
+            "cortex_daily_summary_system_fallback",
+            crate::prompts::text::get("cortex_daily_summary_system_fallback"),
         )?;
         env.add_template("compactor", crate::prompts::text::get("compactor"))?;
         env.add_template(
@@ -1720,6 +1736,21 @@ mod tests {
             .render_system_memory_persistence_contract_retry()
             .expect("contract retry should render");
         assert!(retry.contains("memory_persistence_complete"));
+    }
+
+    #[test]
+    fn renders_cortex_synthesis_system_prompts() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+
+        let intraday = engine
+            .render_static("cortex_intraday_synthesis_system")
+            .expect("intraday synthesis system prompt should render");
+        let daily = engine
+            .render_static("cortex_daily_summary_system")
+            .expect("daily summary system prompt should render");
+
+        assert!(intraday.contains("summary paragraph"));
+        assert!(daily.contains("daily activity summary"));
     }
 }
 // to support multiple languages at compile time.
