@@ -1,0 +1,180 @@
+name: Upstream PR Port Engine
+
+on:
+  push:
+    branches:
+      - automation/upstream-port
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-port-engine
+  cancel-in-progress: false
+
+jobs:
+  port:
+    name: Port configured upstream PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout trigger branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load and validate port request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .github/integration/port.env || {
+            echo "::error::Missing .github/integration/port.env"
+            exit 1
+          }
+          # shellcheck disable=SC1091
+          source .github/integration/port.env
+          : "${PORT_PR:?PORT_PR is required}"
+          PORT_TARGET="${PORT_TARGET:-integration/upstream-prs}"
+          PORT_RESULT="${PORT_RESULT:-port/upstream-${PORT_PR}}"
+          PORT_RESOLUTION="${PORT_RESOLUTION:-}"
+
+          [[ "$PORT_PR" =~ ^[0-9]+$ ]] || {
+            echo "::error::PORT_PR must be numeric"
+            exit 1
+          }
+          [[ "$PORT_TARGET" == "integration/upstream-prs" || "$PORT_TARGET" == port/* ]] || {
+            echo "::error::PORT_TARGET is outside the integration namespace"
+            exit 1
+          }
+          [[ "$PORT_RESULT" == port/* || "$PORT_RESULT" == diagnostics/* ]] || {
+            echo "::error::PORT_RESULT must use port/ or diagnostics/"
+            exit 1
+          }
+
+          printf '%s\n' "$PORT_PR" > /tmp/port-pr
+          printf '%s\n' "$PORT_TARGET" > /tmp/port-target
+          printf '%s\n' "$PORT_RESULT" > /tmp/port-result
+
+          if [ -n "$PORT_RESOLUTION" ]; then
+            test -f "$PORT_RESOLUTION" || {
+              echo "::error::Resolution script not found: $PORT_RESOLUTION"
+              exit 1
+            }
+            cp "$PORT_RESOLUTION" /tmp/resolve.sh
+            chmod +x /tmp/resolve.sh
+          fi
+
+          echo "pr=$PORT_PR" >> "$GITHUB_OUTPUT"
+          echo "target=$PORT_TARGET" >> "$GITHUB_OUTPUT"
+          echo "result=$PORT_RESULT" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve upstream PR refs
+        id: refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.request.outputs.pr }}"
+          PR_JSON=$(gh api "repos/spacedriveapp/spacebot/pulls/${PR}")
+          BASE_SHA=$(jq -r '.base.sha' <<<"$PR_JSON")
+          HEAD_SHA=$(jq -r '.head.sha' <<<"$PR_JSON")
+          TITLE=$(jq -r '.title' <<<"$PR_JSON")
+          echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "Upstream #${PR}: ${TITLE}"
+          echo "base=${BASE_SHA}"
+          echo "head=${HEAD_SHA}"
+
+      - name: Apply exact PR delta onto integration target
+        id: apply
+        shell: bash
+        run: |
+          set -uo pipefail
+          PR="${{ steps.request.outputs.pr }}"
+          TARGET="${{ steps.request.outputs.target }}"
+          BASE_SHA="${{ steps.refs.outputs.base }}"
+          HEAD_SHA="${{ steps.refs.outputs.head }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add canonical https://github.com/spacedriveapp/spacebot.git || true
+          git fetch origin "$TARGET"
+          git fetch canonical "$BASE_SHA" "$HEAD_SHA"
+          git checkout -B work "origin/$TARGET"
+
+          git diff --binary "$BASE_SHA" "$HEAD_SHA" > /tmp/upstream-pr.patch
+          if [ ! -s /tmp/upstream-pr.patch ]; then
+            echo "::error::Upstream PR delta is empty"
+            exit 1
+          fi
+
+          set +e
+          git apply --3way --index /tmp/upstream-pr.patch
+          APPLY_STATUS=$?
+          set -e
+
+          if [ -x /tmp/resolve.sh ]; then
+            PORT_PR="$PR" PORT_TARGET="$TARGET" UPSTREAM_BASE_SHA="$BASE_SHA" UPSTREAM_HEAD_SHA="$HEAD_SHA" /tmp/resolve.sh
+          fi
+
+          UNMERGED=$(git diff --name-only --diff-filter=U || true)
+          MARKERS=$(git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- ':!docs/integration-conflicts/**' || true)
+
+          if [ -n "$UNMERGED" ] || [ -n "$MARKERS" ]; then
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            echo "apply_status=$APPLY_STATUS" >> "$GITHUB_OUTPUT"
+            mkdir -p docs/integration-conflicts
+            {
+              echo "# Upstream PR #${PR} conflict snapshot"
+              echo
+              echo "Target: \`${TARGET}\`"
+              echo
+              echo "Base SHA: \`${BASE_SHA}\`"
+              echo
+              echo "Head SHA: \`${HEAD_SHA}\`"
+              echo
+              echo "## Unmerged paths"
+              echo '```'
+              printf '%s\n' "$UNMERGED"
+              echo '```'
+              echo
+              echo "## Conflict markers"
+              echo '```'
+              printf '%s\n' "$MARKERS"
+              echo '```'
+              echo
+              echo "This branch is diagnostic only and must not be merged while markers remain."
+            } > "docs/integration-conflicts/pr-${PR}.md"
+
+            # Stage the conflicted worktree as a diagnostic snapshot. Staging
+            # records the marker-containing files but does not make them safe.
+            git add -A
+            git commit -m "diagnostics: capture conflicts for upstream #${PR}"
+          else
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+            git add -A
+            if git diff --cached --quiet; then
+              git commit --allow-empty -m "port: upstream #${PR} already satisfied"
+            else
+              git diff --cached --check
+              git commit -m "port: upstream #${PR}"
+            fi
+          fi
+
+      - name: Push result branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT="${{ steps.request.outputs.result }}"
+          if [ "${{ steps.apply.outputs.clean }}" != "true" ]; then
+            RESULT="diagnostics/upstream-${{ steps.request.outputs.pr }}"
+          fi
+          git push origin "HEAD:refs/heads/${RESULT}" --force
+          echo "### Upstream port result" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PR: #${{ steps.request.outputs.pr }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: ${{ steps.request.outputs.target }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Clean: ${{ steps.apply.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Result branch: \`${RESULT}\`" >> "$GITHUB_STEP_SUMMARY"
