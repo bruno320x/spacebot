@@ -101,7 +101,169 @@ impl AutonomyRunHandle {
             .finish_request
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+<<<<<<< ours
         finish_request.clone()
+=======
+        state.quiescent
+    }
+
+    pub async fn changed(&self) {
+        self.changed.notified().await;
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AutonomyRunSlot {
+    state: Arc<Mutex<AutonomyRunSlotState>>,
+}
+
+#[derive(Debug, Default)]
+struct AutonomyRunSlotState {
+    generation: u64,
+    current: Option<AutonomyRunHandle>,
+}
+
+impl AutonomyRunSlot {
+    pub fn begin(&self, run_id: String, store: Arc<AutonomyRunStore>) -> AutonomyRunHandle {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.generation = state.generation.saturating_add(1);
+        let handle = AutonomyRunHandle::new(run_id, state.generation, store);
+        state.current = Some(handle.clone());
+        handle
+    }
+
+    pub fn current(&self) -> Option<AutonomyRunHandle> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.current.clone()
+    }
+
+    pub fn clear_if_current(&self, generation: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.current.as_ref().map(|run| run.generation) != Some(generation) {
+            return false;
+        }
+        state.current = None;
+        true
+    }
+}
+
+/// Cloneable doorbell installed in every [`AgentDeps`]. The bounded channel
+/// coalesces repeated heartbeats while the resident supervisor is busy.
+#[derive(Debug, Clone, Default)]
+pub struct AutonomyControl {
+    check_tx: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+    shutdown_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
+    stopped: Arc<AtomicBool>,
+    stopped_notify: Arc<Notify>,
+    preserve_idle_workers: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    transition: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl AutonomyControl {
+    fn attach(&self, check_tx: mpsc::Sender<()>, shutdown_tx: watch::Sender<bool>) {
+        self.stopped.store(false, Ordering::Release);
+        *self
+            .check_tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(check_tx);
+        *self
+            .shutdown_tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(shutdown_tx);
+    }
+
+    pub fn request_check(&self) {
+        let sender = self
+            .check_tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(sender) = sender {
+            match sender.try_send(()) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(())) => {}
+                Err(mpsc::error::TrySendError::Closed(())) => {
+                    tracing::debug!("autonomy supervisor doorbell is closed");
+                }
+            }
+        }
+    }
+
+    pub async fn lock_transition(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.transition.clone().lock_owned().await
+    }
+
+    pub fn activate(&self) {
+        self.ready.store(true, Ordering::Release);
+        self.request_check();
+    }
+
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    fn request_shutdown(&self, preserve_idle_workers: bool) {
+        self.preserve_idle_workers
+            .store(preserve_idle_workers, Ordering::Release);
+        let sender = self
+            .shutdown_tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(sender) = sender {
+            sender.send_replace(true);
+        }
+    }
+
+    pub async fn shutdown_and_wait(&self) {
+        self.request_shutdown(false);
+        while !self.stopped.load(Ordering::Acquire) {
+            let notified = self.stopped_notify.notified();
+            if self.stopped.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+
+    fn mark_stopped(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.stopped_notify.notify_waiters();
+    }
+
+    fn should_preserve_idle_workers(&self) -> bool {
+        self.preserve_idle_workers.load(Ordering::Acquire)
+    }
+}
+
+pub struct AutonomySupervisorHandle {
+    control: AutonomyControl,
+    task: tokio::task::JoinHandle<()>,
+    channel_state: crate::agent::channel::ChannelState,
+}
+
+impl AutonomySupervisorHandle {
+    pub fn channel_state(&self) -> crate::agent::channel::ChannelState {
+        self.channel_state.clone()
+    }
+
+    pub async fn shutdown(self, preserve_idle_workers: bool) {
+        self.control.request_shutdown(preserve_idle_workers);
+        if let Err(error) = self.task.await
+            && !error.is_cancelled()
+        {
+            tracing::warn!(%error, "autonomy supervisor failed during shutdown");
+        }
+>>>>>>> theirs
     }
 }
 
@@ -486,16 +648,151 @@ pub async fn run_autonomy_channel(
         }
     }
 
+<<<<<<< ours
     if let Err(error) = deps
         .wake_event_store
         .prune_consumed(WAKE_EVENT_RETENTION_DAYS)
         .await
+=======
+async fn start_epoch_if_due(
+    deps: &AgentDeps,
+    run_slot: &AutonomyRunSlot,
+    channel_tx: &mpsc::Sender<InboundMessage>,
+) -> anyhow::Result<Option<ActiveEpoch>> {
+    let _transition_guard = deps.autonomy_control.lock_transition().await;
+    let raw_config = **deps.runtime_config.autonomy.load();
+    let config = AutonomyConfig {
+        level: raw_config.level.min(**deps.autonomy_ceiling.load()),
+        ..raw_config
+    };
+    if config.level == AutonomyLevel::Off || deps.pause_reason().is_some() {
+        return Ok(None);
+    }
+    let pending_count = deps.wake_event_store.pending_count().await?;
+    let last_run_started_at = deps.autonomy_run_store.last_run_started_at().await?;
+    let (current_hour, _) = crate::cron::scheduler::current_hour_and_timezone(&deps.runtime_config);
+    if !autonomy_run_due(
+        config.level,
+        chrono::Utc::now(),
+        last_run_started_at,
+        pending_count,
+        config.active_hours,
+        current_hour,
+        config.interval_secs,
+    ) {
+        return Ok(None);
+    }
+    let permit = match channel_tx.try_reserve() {
+        Ok(permit) => permit,
+        Err(mpsc::error::TrySendError::Full(_)) => return Ok(None),
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            anyhow::bail!("resident autonomy channel inbox is closed")
+        }
+    };
+    let Some(run_id) = deps.autonomy_run_store.try_begin_run().await? else {
+        return Ok(None);
+    };
+    let handle = run_slot.begin(run_id.clone(), deps.autonomy_run_store.clone());
+    let events = deps
+        .wake_event_store
+        .pending(WAKE_EVENT_BATCH_LIMIT)
+        .await?;
+    let event_ids: Vec<String> = events.iter().map(|event| event.id.clone()).collect();
+    let briefing = build_run_briefing(deps, &config, &events, "heartbeat", None).await?;
+    commit_wake_claim(&deps.sqlite_pool, &run_id, &event_ids, &event_ids).await?;
+    permit.send(autonomy_message(deps, briefing, handle.generation, true));
+    tracing::info!(agent_id = %deps.agent_id, %run_id, generation = handle.generation, "autonomy epoch started");
+    Ok(Some(ActiveEpoch {
+        handle,
+        config,
+        wake_event_ids: event_ids,
+        started_at: chrono::Utc::now(),
+        last_heartbeat: tokio::time::Instant::now(),
+    }))
+}
+
+async fn send_heartbeat(
+    deps: &AgentDeps,
+    channel_tx: &mpsc::Sender<InboundMessage>,
+    epoch: &mut ActiveEpoch,
+) -> anyhow::Result<()> {
+    let _transition_guard = deps.autonomy_control.lock_transition().await;
+    let config = **deps.runtime_config.autonomy.load();
+    let Some(effective_level) = heartbeat_level(config.level, **deps.autonomy_ceiling.load())
+    else {
+        return Ok(());
+    };
+    let pending_count = deps.wake_event_store.pending_count().await?;
+    if pending_count == 0
+        && epoch.last_heartbeat.elapsed() < Duration::from_secs(config.interval_secs.max(1))
+>>>>>>> theirs
     {
         tracing::warn!(%error, "failed to prune consumed wake events");
     }
+<<<<<<< ours
 
     if let Some(failure) = channel_failed {
         anyhow::bail!(failure);
+=======
+    let permit = match channel_tx.try_reserve() {
+        Ok(permit) => permit,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::debug!(run_id = %epoch.handle.run_id, "autonomy heartbeat coalesced behind queued channel work");
+            return Ok(());
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            anyhow::bail!("resident autonomy channel inbox is closed");
+        }
+    };
+    epoch.config = AutonomyConfig {
+        level: effective_level,
+        ..config
+    };
+    let events = deps
+        .wake_event_store
+        .pending(WAKE_EVENT_BATCH_LIMIT)
+        .await?;
+    let event_ids: Vec<String> = events.iter().map(|event| event.id.clone()).collect();
+    let elapsed = chrono::Utc::now()
+        .signed_duration_since(epoch.started_at)
+        .num_seconds()
+        .max(0) as u64;
+    let briefing =
+        build_run_briefing(deps, &epoch.config, &events, "heartbeat", Some(elapsed)).await?;
+    let mut all_event_ids = epoch.wake_event_ids.clone();
+    all_event_ids.extend(event_ids.iter().cloned());
+    commit_wake_claim(
+        &deps.sqlite_pool,
+        &epoch.handle.run_id,
+        &event_ids,
+        &all_event_ids,
+    )
+    .await?;
+    permit.send(autonomy_message(
+        deps,
+        briefing,
+        epoch.handle.generation,
+        false,
+    ));
+    epoch.wake_event_ids = all_event_ids;
+    epoch.last_heartbeat = tokio::time::Instant::now();
+    Ok(())
+}
+
+fn heartbeat_level(level: AutonomyLevel, ceiling: AutonomyLevel) -> Option<AutonomyLevel> {
+    let effective = level.min(ceiling);
+    (effective != AutonomyLevel::Off).then_some(effective)
+}
+
+async fn commit_wake_claim(
+    pool: &sqlx::SqlitePool,
+    run_id: &str,
+    event_ids: &[String],
+    all_event_ids: &[String],
+) -> anyhow::Result<()> {
+    if event_ids.is_empty() {
+        return Ok(());
+>>>>>>> theirs
     }
 
     tracing::info!(run_id = %run_id, timed_out, completed = handle.completed(), "autonomy run finished");
@@ -831,6 +1128,40 @@ mod tests {
             12,
             1800
         ));
+    }
+
+    #[test]
+    fn heartbeat_admission_stops_when_dial_or_ceiling_is_off() {
+        assert_eq!(
+            heartbeat_level(AutonomyLevel::Act, AutonomyLevel::Suggest),
+            Some(AutonomyLevel::Suggest)
+        );
+        assert_eq!(
+            heartbeat_level(AutonomyLevel::Off, AutonomyLevel::Act),
+            None
+        );
+        assert_eq!(
+            heartbeat_level(AutonomyLevel::Act, AutonomyLevel::Off),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn autonomy_transitions_serialize_with_admission() {
+        let control = AutonomyControl::default();
+        let guard = control.lock_transition().await;
+        let contender = {
+            let control = control.clone();
+            tokio::spawn(async move { control.lock_transition().await })
+        };
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!contender.is_finished());
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(1), contender)
+            .await
+            .expect("transition lock should become available")
+            .expect("contender should not panic");
     }
 
     #[test]

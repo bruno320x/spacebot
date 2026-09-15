@@ -89,11 +89,17 @@ Held to that test, the set stays small: things a human perceived, and writes to 
 | Journal-only | no | yes, on the next wake |
 | Neither | no | no |
 
+<<<<<<< ours
 An event is journaled because the agent needs to remember it, and it triggers a wake because it needs acting on *now*. Most things are one or the other. This is what several declared-but-unproduced `SystemEvent` variants are reaching for: `cortex.observation` wants to be journal-only.
 
 **Journal entries must survive compaction.** A run's detail collapses into its summary on exit, and "have I already told them this?" is a question spanning days — exactly the range compaction removes. An outbound-message record that lives only in run detail works for one wake and then silently stops. Outward-facing actions are promoted into the run summary rather than discarded with the rest of the detail.
 
 ---
+=======
+Changing the effective level to `off` suppresses further heartbeat and wake admission immediately. An active epoch is not cancelled: its current turn and owned children can settle, but the supervisor does not feed it additional work. Once that epoch completes, the resident channel remains idle until autonomy is enabled again.
+
+The transcript holds the current epoch's work. System scaffolding and previous epoch detail do not accumulate.
+>>>>>>> theirs
 
 ## What It Does
 
