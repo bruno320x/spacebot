@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+<<<<<<< ours
 #[derive(Serialize, Deserialize, Debug, utoipa::ToSchema)]
 pub struct RoutingSection {
     pub channel: String,
@@ -16,6 +17,20 @@ pub struct RoutingSection {
     pub cortex: String,
     pub voice: String,
     pub rate_limit_cooldown_secs: u64,
+=======
+#[derive(Serialize, Debug)]
+pub(super) struct RoutingSection {
+    channel: String,
+    branch: String,
+    worker: String,
+    compactor: String,
+    cortex: String,
+    voice: String,
+    voice_language: Option<String>,
+    voice_translate: bool,
+    stt_provider: Option<String>,
+    rate_limit_cooldown_secs: u64,
+>>>>>>> theirs
 }
 
 #[derive(Serialize, Deserialize, Debug, utoipa::ToSchema)]
@@ -199,6 +214,9 @@ pub(super) struct RoutingUpdate {
     compactor: Option<String>,
     cortex: Option<String>,
     voice: Option<String>,
+    voice_language: Option<String>,
+    voice_translate: Option<bool>,
+    stt_provider: Option<String>,
     rate_limit_cooldown_secs: Option<u64>,
 }
 
@@ -363,6 +381,9 @@ pub(super) async fn get_agent_config(
             compactor: routing.compactor.clone(),
             cortex: routing.cortex.clone(),
             voice: routing.voice.clone(),
+            voice_language: routing.voice_language.clone(),
+            voice_translate: routing.voice_translate,
+            stt_provider: routing.stt_provider.clone(),
             rate_limit_cooldown_secs: routing.rate_limit_cooldown_secs,
         },
         tuning: TuningSection {
@@ -703,6 +724,15 @@ fn update_routing_table(
     }
     if let Some(ref v) = routing.voice {
         table["voice"] = toml_edit::value(v.as_str());
+    }
+    if let Some(ref v) = routing.voice_language {
+        table["voice_language"] = toml_edit::value(v.as_str());
+    }
+    if let Some(v) = routing.voice_translate {
+        table["voice_translate"] = toml_edit::value(v);
+    }
+    if let Some(ref v) = routing.stt_provider {
+        table["stt_provider"] = toml_edit::value(v.as_str());
     }
     if let Some(v) = routing.rate_limit_cooldown_secs {
         table["rate_limit_cooldown_secs"] = toml_edit::value(v as i64);

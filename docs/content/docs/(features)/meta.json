@@ -1,5 +1,6 @@
 {
   "title": "Features",
+<<<<<<< ours
   "pages": [
     "autonomy",
     "goals",
@@ -19,4 +20,7 @@
     "portal",
     "projects"
   ]
+=======
+  "pages": ["workers", "tasks", "opencode", "tools", "mcp", "browser", "cron", "skills", "ingestion", "voice-transcription"]
+>>>>>>> theirs
 }
