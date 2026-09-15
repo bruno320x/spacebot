@@ -1854,8 +1854,23 @@ impl Channel {
             ControlAction::SetResponseMode(mode) => {
                 self.set_response_mode(mode).await;
                 self.send_builtin_text(
+<<<<<<< ours
                     crate::commands::control::mode_confirmation(mode).to_string(),
                     def.name,
+=======
+                    "observe mode enabled. i'll learn from this conversation but won't respond."
+                        .to_string(),
+                    "observe",
+                )
+                .await;
+                return Ok(true);
+            }
+            "/active" => {
+                self.set_response_mode(ResponseMode::Active).await;
+                self.send_builtin_text(
+                    "active mode enabled. i'll respond normally in this chat.".to_string(),
+                    "active",
+>>>>>>> theirs
                 )
                 .await;
             }
@@ -1887,6 +1902,27 @@ impl Channel {
                     def.name,
                 )
                 .await;
+<<<<<<< ours
+=======
+                return Ok(true);
+            }
+            "/help" => {
+                let lines = [
+                    "commands:".to_string(),
+                    "- /status: current mode, models, binding snapshot".to_string(),
+                    "- /today: in-progress + ready task snapshot".to_string(),
+                    "- /tasks: ready task list".to_string(),
+                    "- /digest: one-shot day digest (00:00 -> now)".to_string(),
+                    "- /observe: learn from conversation, never respond".to_string(),
+                    "- /mention-only: only respond when @mentioned, replied to, or given a command"
+                        .to_string(),
+                    "- /active: normal reply mode".to_string(),
+                    "- /agent-id: runtime agent id".to_string(),
+                ];
+                let body = lines.join("\n");
+                self.send_builtin_text(body, "help").await;
+                return Ok(true);
+>>>>>>> theirs
             }
         }
     }
@@ -4280,8 +4316,18 @@ impl Channel {
                         );
                     }
 
+<<<<<<< ours
                     let (event_type, event_summary) =
                         branch_working_memory_event_summary(conclusion);
+=======
+                    // Truncate for working memory — full conclusion lives in branch_runs.
+                    let summary = if conclusion.len() > 200 {
+                        let end = conclusion.floor_char_boundary(200);
+                        format!("{}...", &conclusion[..end])
+                    } else {
+                        conclusion.clone()
+                    };
+>>>>>>> theirs
                     self.deps
                         .working_memory
                         .emit(event_type, event_summary)
@@ -4402,7 +4448,12 @@ impl Channel {
 
                 // Record worker completion in working memory.
                 let worker_summary = if result.len() > 200 {
+<<<<<<< ours
                     format!("{}...", &result[..result.floor_char_boundary(200)])
+=======
+                    let end = result.floor_char_boundary(200);
+                    format!("{}...", &result[..end])
+>>>>>>> theirs
                 } else {
                     result.clone()
                 };
