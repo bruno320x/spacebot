@@ -1448,11 +1448,6 @@ pub struct AutonomyConfig {
     pub max_turns: u32,
     /// Maximum tasks to work on per wake.
     pub max_tasks_per_run: u32,
-    /// Hard wall-clock timeout for a run. Should rarely fire — the soft
-    /// warning at `warn_secs` asks the channel to wrap up first.
-    pub timeout_secs: u64,
-    /// When to inject the soft "wrap up" warning into the run.
-    pub warn_secs: u64,
     /// How many past run summaries to surface on wake.
     pub run_history_count: u32,
     /// Whether this agent picks up tasks with no assigned agent.
@@ -1467,8 +1462,6 @@ impl Default for AutonomyConfig {
             active_hours: None,
             max_turns: 20,
             max_tasks_per_run: 2,
-            timeout_secs: 600,
-            warn_secs: 480,
             run_history_count: 5,
             claim_unowned: true,
         }
@@ -1476,22 +1469,13 @@ impl Default for AutonomyConfig {
 }
 
 impl AutonomyConfig {
-    /// Validate the invariants from autonomy.md, clamping `warn_secs` to
-    /// `timeout_secs - 60` when it does not fire before the hard timeout.
-    /// `scope` names the config path (e.g. "defaults.autonomy") so load
-    /// errors point at the offending section.
-    pub fn validated(mut self, scope: &str) -> Result<Self> {
+    /// Validate autonomy bounds. `scope` names the config path so load errors
+    /// point at the offending section.
+    pub fn validated(self, scope: &str) -> Result<Self> {
         if self.interval_secs < 60 {
             return Err(ConfigError::Invalid(format!(
                 "{scope}.interval_secs must be >= 60, got {}",
                 self.interval_secs
-            ))
-            .into());
-        }
-        if self.timeout_secs > self.interval_secs {
-            return Err(ConfigError::Invalid(format!(
-                "{scope}.timeout_secs ({}) must be <= interval_secs ({})",
-                self.timeout_secs, self.interval_secs
             ))
             .into());
         }
@@ -1507,17 +1491,6 @@ impl AutonomyConfig {
                 "{scope}.active_hours hours must be 0-23, got [{start}, {end}]"
             ))
             .into());
-        }
-        if self.warn_secs >= self.timeout_secs {
-            let clamped = self.timeout_secs.saturating_sub(60);
-            tracing::warn!(
-                scope,
-                warn_secs = self.warn_secs,
-                timeout_secs = self.timeout_secs,
-                clamped,
-                "autonomy warn_secs must be < timeout_secs, clamping"
-            );
-            self.warn_secs = clamped;
         }
         Ok(self)
     }
@@ -3670,8 +3643,6 @@ mod autonomy_config_validation_tests {
     fn autonomy_rejects_short_interval() {
         let error = AutonomyConfig {
             interval_secs: 59,
-            timeout_secs: 59,
-            warn_secs: 30,
             ..AutonomyConfig::default()
         }
         .validated("defaults.autonomy")
@@ -3681,56 +3652,6 @@ mod autonomy_config_validation_tests {
                 .to_string()
                 .contains("defaults.autonomy.interval_secs")
         );
-    }
-
-    #[test]
-    fn autonomy_rejects_timeout_longer_than_interval() {
-        let error = AutonomyConfig {
-            interval_secs: 300,
-            timeout_secs: 301,
-            ..AutonomyConfig::default()
-        }
-        .validated("agents.main.autonomy")
-        .expect_err("timeout > interval must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("agents.main.autonomy.timeout_secs")
-        );
-    }
-
-    #[test]
-    fn autonomy_allows_timeout_equal_to_interval() {
-        // Back-to-back runs (continuous operation) are valid but intentional.
-        let config = AutonomyConfig {
-            interval_secs: 600,
-            timeout_secs: 600,
-            ..AutonomyConfig::default()
-        }
-        .validated("defaults.autonomy")
-        .expect("timeout == interval is valid");
-        assert_eq!(config.timeout_secs, 600);
-    }
-
-    #[test]
-    fn autonomy_clamps_warn_at_or_past_timeout() {
-        let config = AutonomyConfig {
-            timeout_secs: 600,
-            warn_secs: 600,
-            ..AutonomyConfig::default()
-        }
-        .validated("defaults.autonomy")
-        .expect("warn violation clamps, not errors");
-        assert_eq!(config.warn_secs, 540);
-
-        let config = AutonomyConfig {
-            timeout_secs: 600,
-            warn_secs: 9999,
-            ..AutonomyConfig::default()
-        }
-        .validated("defaults.autonomy")
-        .expect("warn violation clamps, not errors");
-        assert_eq!(config.warn_secs, 540);
     }
 
     #[test]
