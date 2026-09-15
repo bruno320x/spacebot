@@ -17,10 +17,15 @@ pub use chronicle::{
     CommitOutcome, NewCheckpoint,
 };
 pub use history::{
+<<<<<<< ours
     ConversationLogger, ProcessDetailRow, ProcessRunLogger, ProcessRunRow, TimelineItem,
     WorkerCompletionCommit, WorkerDetailRow, WorkerLifecycle, WorkerOutcomeKind, WorkerRunRow,
     WorkerStartResult, WorkerTerminalOutcome, WorkerTerminalOwner, WorkerTranscriptCommit,
     WorkerTransitionResult,
+=======
+    ConversationLogger, ProcessRunLogger, ReflectionRunLogger, ReflectionRunRow, TimelineItem,
+    WorkerDetailRow, WorkerRunRow,
+>>>>>>> theirs
 };
 pub use participants::{
     ActiveParticipant, participant_display_name, participant_memory_key, renderable_participants,
