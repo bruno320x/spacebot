@@ -79,10 +79,10 @@ resolve('src/agent/worker.rs', [worker_hook, 'theirs', 'theirs'])
 worker = Path('src/agent/worker.rs')
 text = worker.read_text()
 old = 'crate::secrets::scrub::scrub_leaks(&scrubbed);'
-new = '''crate::secrets::scrub::scrub_leaks_with_mode(\n                            &scrubbed,\n                            self.deps.runtime_config.sandbox.load().secret_scanner,\n                        );'''
-if text.count(old) != 1:
-    raise SystemExit(f'worker.rs: expected one registry follow-up scrub, found {text.count(old)}')
-worker.write_text(text.replace(old, new, 1))
+new = 'crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.deps.runtime_config.sandbox.load().secret_scanner);'
+if text.count(old) != 2:
+    raise SystemExit(f'worker.rs: expected two registry result scrubs, found {text.count(old)}')
+worker.write_text(text.replace(old, new))
 
 # Registry-first cancellation supersedes channel-owned/detached runtime maps.
 # Durable nonterminal/terminal fallback remains in upstream's NotFound branch.
@@ -104,7 +104,7 @@ resolve('src/opencode/worker.rs', ['theirs', 'theirs'])
 opencode = Path('src/opencode/worker.rs')
 text = opencode.read_text()
 old = 'crate::secrets::scrub::scrub_leaks(&scrubbed);'
-new = '''crate::secrets::scrub::scrub_leaks_with_mode(\n                    &scrubbed,\n                    self.secret_scan_mode,\n                );'''
+new = 'crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.secret_scan_mode);'
 if text.count(old) != 2:
     raise SystemExit(f'opencode worker: expected two operation-result scrubs, found {text.count(old)}')
 text = text.replace(old, new)
@@ -138,10 +138,6 @@ if text.count(old) != 1:
     raise SystemExit('process_control: WorkerBackend Display shape changed')
 text = text.replace(old, new, 1)
 pc.write_text(text)
-
-# Sanity: the conflict-free tree must not retain old channel-owned ACP routing.
-# ACP migration is deliberately performed in the next resolver revision once
-# compiler feedback confirms the exact #653 event/registry surface.
 PY
 
 git add \
