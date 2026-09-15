@@ -118,8 +118,13 @@ max_older = 12                   # older checkpoints listed, collapsed first und
 context_token_budget = 2000      # token budget for the whole chronicle section
 expand_message_limit = 100       # raw messages a single `chronicle expand` returns
 max_messages_per_checkpoint = 400 # raw messages one checkpoint may summarize
+<<<<<<< ours
 rollup_threshold = 12             # unrolled checkpoints before a level-1 rollup
 rollup_batch = 8                  # oldest checkpoints summarized by one rollup
+=======
+rollup_threshold = 12            # un-rolled checkpoints before the oldest run is rolled up
+rollup_batch = 8                 # checkpoints per rollup
+>>>>>>> theirs
 
 # Cortex (system observer) settings.
 [defaults.cortex]

@@ -814,9 +814,17 @@ pub struct ChronicleConfig {
     pub expand_message_limit: i64,
     /// Raw messages a single checkpoint summarization may read.
     pub max_messages_per_checkpoint: i64,
+<<<<<<< ours
     /// Number of unrolled level-0 checkpoints that trigger a level-1 rollup.
     pub rollup_threshold: usize,
     /// Oldest unrolled level-0 checkpoints included in one rollup.
+=======
+    /// Un-rolled checkpoints at one level before the oldest run is rolled into
+    /// a higher-level summary. Without this a long session's older entries
+    /// fall off the end of the prompt view entirely.
+    pub rollup_threshold: usize,
+    /// How many checkpoints a single rollup covers.
+>>>>>>> theirs
     pub rollup_batch: usize,
 }
 
