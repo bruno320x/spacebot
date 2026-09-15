@@ -15,8 +15,13 @@ pub mod config;
 mod cortex;
 pub mod cron;
 mod factory;
+<<<<<<< ours
 pub mod goals;
 pub mod ingest;
+=======
+mod fs;
+mod ingest;
+>>>>>>> theirs
 mod links;
 pub mod mcp;
 pub mod memories;

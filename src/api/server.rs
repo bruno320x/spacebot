@@ -2,10 +2,16 @@
 
 use super::state::ApiState;
 use super::{
+<<<<<<< ours
     activity, agents, attachments, autonomy, bindings, channels, chronicle, config, cortex, cron,
     factory, goals, ingest, links, mcp, memories, messaging, models, notifications, opencode_proxy,
     portal, projects, prompts, providers, secrets, settings, skills, ssh, system, tasks, tools,
     usage, wakes, wiki, workers,
+=======
+    agents, bindings, channels, config, cortex, cron, factory, fs, ingest, links, mcp, memories,
+    messaging, models, opencode_proxy, projects, providers, secrets, settings, skills, ssh, system,
+    tasks, tools, webchat, workers,
+>>>>>>> theirs
 };
 
 use axum::Json;
@@ -327,6 +333,7 @@ pub async fn start_http_server(
         ])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::ACCEPT]);
 
+<<<<<<< ours
     // Build the OpenAPI router and split into routes and spec
     let (api_routes, api) = api_router().split_for_parts();
 
@@ -337,6 +344,66 @@ pub async fn start_http_server(
         // Swagger UI and OpenAPI spec (protected)
         .merge(utoipa_swagger_ui::SwaggerUi::new("/api/docs").url("/api/openapi.json", api))
         // Opencode proxy routes (protected)
+=======
+    let api_routes = Router::new()
+        .route("/health", get(system::health))
+        .route("/idle", get(system::idle))
+        .route("/status", get(system::status))
+        .route("/system/storage", get(system::storage_status))
+        .route("/fs/list-dir", get(fs::list_dir))
+        .route("/system/backup/export", get(system::backup_export))
+        .route("/system/backup/restore", post(system::backup_restore))
+        .route("/overview", get(agents::instance_overview))
+        .route("/events", get(system::events_sse))
+        .route(
+            "/agents",
+            get(agents::list_agents)
+                .post(agents::create_agent)
+                .put(agents::update_agent)
+                .delete(agents::delete_agent),
+        )
+        .route("/agents/mcp", get(agents::list_agent_mcp))
+        .route("/agents/mcp/reconnect", post(agents::reconnect_agent_mcp))
+        .route(
+            "/agents/warmup",
+            get(agents::get_warmup_status).post(agents::trigger_warmup),
+        )
+        .route(
+            "/mcp/servers",
+            get(mcp::list_mcp_servers)
+                .post(mcp::create_mcp_server)
+                .put(mcp::update_mcp_server),
+        )
+        .route("/mcp/servers/{name}", delete(mcp::delete_mcp_server))
+        .route(
+            "/mcp/servers/{name}/reconnect",
+            post(mcp::reconnect_mcp_server),
+        )
+        .route("/mcp/status", get(mcp::mcp_status))
+        .route("/agents/overview", get(agents::agent_overview))
+        .route(
+            "/channels",
+            get(channels::list_channels).delete(channels::delete_channel),
+        )
+        .route("/channels/archive", put(channels::set_channel_archive))
+        .route("/channels/messages", get(channels::channel_messages))
+        .route("/channels/status", get(channels::channel_status))
+        .route("/channels/inspect", get(channels::inspect_prompt))
+        .route(
+            "/channels/inspect/capture",
+            post(channels::set_prompt_capture),
+        )
+        .route(
+            "/channels/inspect/snapshots",
+            get(channels::list_prompt_snapshots),
+        )
+        .route(
+            "/channels/inspect/snapshot",
+            get(channels::get_prompt_snapshot),
+        )
+        .route("/agents/workers", get(workers::list_workers))
+        .route("/agents/workers/detail", get(workers::worker_detail))
+>>>>>>> theirs
         .route(
             "/api/opencode/{port}/{*path}",
             any(opencode_proxy::opencode_proxy),

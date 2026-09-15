@@ -204,6 +204,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+<<<<<<< ours
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcut(toggle_shortcut.clone())
@@ -239,6 +240,10 @@ fn main() {
             toggle_voice_overlay,
             resize_overlay_window,
         ])
+=======
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![get_server_url, set_server_url])
+>>>>>>> theirs
         .setup(|app| {
             // Apply macOS titlebar style (invisible toolbar for traffic light padding)
             #[cfg(target_os = "macos")]
