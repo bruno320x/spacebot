@@ -161,6 +161,30 @@ Spacebot's memory is a typed, graph-connected knowledge system in SQLite and Lan
 - **Write-time consolidation** — duplicates get merged when memories are saved, not cleaned up later by a background loop
 - **Memory import** — drop files into `ingest/` and Spacebot extracts structured memories automatically. Supports text, markdown, and PDF.
 
+### Voice Transcription
+
+Audio attachments (voice messages, audio files) are transcribed before being passed to the channel. Set `routing.voice` to choose the backend:
+
+**Provider-based** — route through any configured LLM provider that supports audio input:
+
+```toml
+[defaults.routing]
+voice = "openai/whisper-1"
+```
+
+**Local Whisper** (`stt-whisper` feature, requires `--features stt-whisper` at build time) — run inference locally via [whisper-rs](https://codeberg.org/tazz4843/whisper-rs), no API call needed:
+
+```toml
+[defaults.routing]
+voice = "whisper-local://small"
+```
+
+The model is downloaded automatically from [`ggerganov/whisper.cpp`](https://huggingface.co/ggerganov/whisper.cpp) on first use and cached in `~/.cache/huggingface/hub`. Supported size names: `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large`, `large-v1`, `large-v2`, `large-v3`. An absolute path to a GGML model file also works.
+
+GPU acceleration via Vulkan is enabled automatically when a compatible device is detected. The loaded model is cached for the process lifetime — restart to switch models.
+
+Ogg/Opus audio (Telegram voice messages) is decoded natively. All other formats are handled via symphonia.
+
 ### Skills
 
 Skills are reusable procedures injected into worker system prompts. The agent writes them from experience — and they accumulate automatically over time.

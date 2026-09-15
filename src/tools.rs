@@ -77,6 +77,7 @@ pub mod task_create;
 pub mod task_history;
 pub mod task_list;
 pub mod task_update;
+pub mod transcribe_audio;
 pub mod web_search;
 pub mod wiki_create;
 pub mod wiki_edit;
@@ -195,6 +196,9 @@ pub use task_create::{TaskCreateArgs, TaskCreateError, TaskCreateOutput, TaskCre
 pub use task_history::{TaskHistoryArgs, TaskHistoryError, TaskHistoryOutput, TaskHistoryTool};
 pub use task_list::{TaskListArgs, TaskListError, TaskListOutput, TaskListTool};
 pub use task_update::{TaskUpdateArgs, TaskUpdateError, TaskUpdateOutput, TaskUpdateTool};
+pub use transcribe_audio::{
+    TranscribeAudioArgs, TranscribeAudioError, TranscribeAudioOutput, TranscribeAudioTool,
+};
 pub use web_search::{SearchResult, WebSearchArgs, WebSearchError, WebSearchOutput, WebSearchTool};
 pub use wiki_create::{WikiCreateArgs, WikiCreateError, WikiCreateOutput, WikiCreateTool};
 pub use wiki_edit::{WikiEditArgs, WikiEditError, WikiEditOutput, WikiEditTool};
@@ -232,8 +236,12 @@ pub use factory_update_identity::{
 
 use crate::agent::channel::ChannelState;
 use crate::config::{BrowserConfig, RuntimeConfig};
+<<<<<<< ours
 use crate::conversation::settings::WorkerMemoryMode;
 use crate::goals::GoalStore;
+=======
+use crate::llm::manager::LlmManager;
+>>>>>>> theirs
 use crate::memory::MemorySearch;
 use crate::sandbox::Sandbox;
 use crate::tasks::TaskStore;
@@ -1286,6 +1294,7 @@ pub fn create_worker_tool_server(
     sandbox: Arc<Sandbox>,
     mcp_tools: Vec<McpToolAdapter>,
     runtime_config: Arc<RuntimeConfig>,
+<<<<<<< ours
     worker_memory_mode: WorkerMemoryMode,
     memory_search: Arc<MemorySearch>,
     wiki_write: bool,
@@ -1294,6 +1303,11 @@ pub fn create_worker_tool_server(
     lifecycle: Option<crate::lifecycle::LifecycleHandle>,
     process_run_logger: crate::conversation::ProcessRunLogger,
     interactive: bool,
+=======
+    voice_model: String,
+    llm_manager: Arc<LlmManager>,
+    http: reqwest::Client,
+>>>>>>> theirs
 ) -> ToolServerHandle {
     let mut server = ToolServer::new()
         .tool(
@@ -1335,6 +1349,14 @@ pub fn create_worker_tool_server(
 
     if let Some(store) = runtime_config.secrets.load().as_ref() {
         server = server.tool(SecretSetTool::new(store.clone(), agent_id.clone()));
+    }
+
+    if !voice_model.is_empty() {
+        server = server.tool(TranscribeAudioTool::new(
+            voice_model,
+            llm_manager,
+            http,
+        ));
     }
 
     if browser_config.enabled {

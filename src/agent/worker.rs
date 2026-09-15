@@ -1,6 +1,12 @@
 //! Worker: Independent task execution process.
 
+<<<<<<< ours
 use crate::agent::compactor::{aligned_fractional_cut, estimate_history_tokens};
+=======
+use std::sync::Arc;
+
+use crate::agent::compactor::estimate_history_tokens;
+>>>>>>> theirs
 use crate::config::BrowserConfig;
 use crate::conversation::history::{ProcessRunLogger, WorkerLifecycle};
 use crate::conversation::settings::WorkerMemoryMode;
@@ -609,7 +615,13 @@ impl Worker {
             .with_tool_call_registry(tool_call_registry.clone());
 
         // Create per-worker ToolServer with task tools
+<<<<<<< ours
         let interactive = self.input_rx.is_some();
+=======
+        let routing = self.deps.runtime_config.routing.load();
+        let voice_model = routing.voice.clone();
+
+>>>>>>> theirs
         let worker_tool_server = crate::tools::create_worker_tool_server(
             self.deps.agent_id.clone(),
             self.id,
@@ -625,6 +637,7 @@ impl Worker {
             self.deps.sandbox.clone(),
             mcp_tools,
             self.deps.runtime_config.clone(),
+<<<<<<< ours
             self.worker_memory_mode,
             self.deps.memory_search.clone(),
             self.wiki_write,
@@ -644,6 +657,13 @@ impl Worker {
         let usage_accumulator = std::sync::Arc::new(tokio::sync::Mutex::new(
             crate::llm::usage::UsageAccumulator::new(),
         ));
+=======
+            voice_model,
+            Arc::clone(&self.deps.llm_manager),
+            self.deps.llm_manager.http_client().clone(),
+        );
+        let model_name = routing.resolve(ProcessType::Worker, None).to_string();
+>>>>>>> theirs
         let model = SpacebotModel::make(&self.deps.llm_manager, &model_name)
             .with_context(&*self.deps.agent_id, "worker")
             .with_worker_type("builtin")

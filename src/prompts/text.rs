@@ -299,6 +299,7 @@ fn lookup(lang: &str, key: &str) -> &'static str {
         ("en", "tools/task_update") => {
             include_str!("../../prompts/en/tools/task_update_description.md.j2")
         }
+<<<<<<< ours
         ("en", "tools/task_history") => {
             include_str!("../../prompts/en/tools/task_history_description.md.j2")
         }
@@ -347,6 +348,10 @@ fn lookup(lang: &str, key: &str) -> &'static str {
         ("en", "tools/ask") => include_str!("../../prompts/en/tools/ask_description.md.j2"),
         ("en", "tools/attachment_recall") => {
             include_str!("../../prompts/en/tools/attachment_recall_description.md.j2")
+=======
+        ("en", "tools/transcribe_audio") => {
+            include_str!("../../prompts/en/tools/transcribe_audio_description.md.j2")
+>>>>>>> theirs
         }
 
         // Fallback: unknown language or key -> try English
