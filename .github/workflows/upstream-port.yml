@@ -116,14 +116,21 @@ jobs:
           APPLY_STATUS=$?
           set -e
 
+          RESOLUTION_USED=false
           if [ -x /tmp/resolve.sh ]; then
+            RESOLUTION_USED=true
             PORT_PR="$PR" PORT_TARGET="$TARGET" UPSTREAM_BASE_SHA="$BASE_SHA" UPSTREAM_HEAD_SHA="$HEAD_SHA" /tmp/resolve.sh
           fi
 
           UNMERGED=$(git diff --name-only --diff-filter=U || true)
           MARKERS=$(git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- ':!docs/integration-conflicts/**' || true)
 
-          if [ -n "$UNMERGED" ] || [ -n "$MARKERS" ]; then
+          FAILED_APPLY=false
+          if [ "$APPLY_STATUS" -ne 0 ] && [ "$RESOLUTION_USED" != true ]; then
+            FAILED_APPLY=true
+          fi
+
+          if [ "$FAILED_APPLY" = true ] || [ -n "$UNMERGED" ] || [ -n "$MARKERS" ]; then
             echo "clean=false" >> "$GITHUB_OUTPUT"
             echo "apply_status=$APPLY_STATUS" >> "$GITHUB_OUTPUT"
             mkdir -p docs/integration-conflicts
@@ -135,6 +142,10 @@ jobs:
               echo "Base SHA: \`${BASE_SHA}\`"
               echo
               echo "Head SHA: \`${HEAD_SHA}\`"
+              echo
+              echo "Apply status: \`${APPLY_STATUS}\`"
+              echo
+              echo "Resolution script used: \`${RESOLUTION_USED}\`"
               echo
               echo "## Unmerged paths"
               echo '```'
@@ -149,12 +160,11 @@ jobs:
               echo "This branch is diagnostic only and must not be merged while markers remain."
             } > "docs/integration-conflicts/pr-${PR}.md"
 
-            # Stage the conflicted worktree as a diagnostic snapshot. Staging
-            # records the marker-containing files but does not make them safe.
             git add -A
             git commit -m "diagnostics: capture conflicts for upstream #${PR}"
           else
             echo "clean=true" >> "$GITHUB_OUTPUT"
+            echo "apply_status=$APPLY_STATUS" >> "$GITHUB_OUTPUT"
             git add -A
             if git diff --cached --quiet; then
               git commit --allow-empty -m "port: upstream #${PR} already satisfied"
@@ -176,5 +186,6 @@ jobs:
           echo "### Upstream port result" >> "$GITHUB_STEP_SUMMARY"
           echo "- PR: #${{ steps.request.outputs.pr }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Target: ${{ steps.request.outputs.target }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Apply status: ${{ steps.apply.outputs.apply_status }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Clean: ${{ steps.apply.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Result branch: \`${RESULT}\`" >> "$GITHUB_STEP_SUMMARY"
