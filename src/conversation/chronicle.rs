@@ -541,8 +541,8 @@ impl ChronicleStore {
         Ok(checkpoints_from_rows(rows))
     }
 
-    /// The compact chronicle representation for prompt rendering: level-1
-    /// rollups plus level-0 checkpoints not yet absorbed by a rollup.
+    /// The compact chronicle representation for prompt rendering: every
+    /// checkpoint not represented by a parent rollup, at any level.
     pub async fn list_renderable(
         &self,
         channel_id: &str,
@@ -551,10 +551,9 @@ impl ChronicleStore {
         let rows = sqlx::query(
             "SELECT * FROM ( \
                  SELECT * FROM channel_chronicle_checkpoints \
-                 WHERE channel_id = ? \
-                   AND (level = 1 OR (level = 0 AND rolled_up_into IS NULL)) \
+                 WHERE channel_id = ? AND rolled_up_into IS NULL \
                  ORDER BY covers_to_seq DESC LIMIT ? \
-             ) ORDER BY covers_from_seq ASC",
+             ) ORDER BY covers_from_seq ASC, seq ASC",
         )
         .bind(channel_id)
         .bind(limit)
@@ -562,6 +561,37 @@ impl ChronicleStore {
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
 
+        Ok(checkpoints_from_rows(rows))
+    }
+
+    /// Checkpoints at every level, newest first.
+    pub async fn list_all_levels(
+        &self,
+        channel_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ChronicleCheckpoint>> {
+        let rows = sqlx::query(
+            "SELECT * FROM channel_chronicle_checkpoints \
+             WHERE channel_id = ? ORDER BY seq DESC LIMIT ?",
+        )
+        .bind(channel_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(checkpoints_from_rows(rows))
+    }
+
+    /// Direct children represented by one rollup, oldest first.
+    pub async fn children_of(&self, rollup_id: &str) -> Result<Vec<ChronicleCheckpoint>> {
+        let rows = sqlx::query(
+            "SELECT * FROM channel_chronicle_checkpoints \
+             WHERE rolled_up_into = ? ORDER BY seq ASC",
+        )
+        .bind(rollup_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
         Ok(checkpoints_from_rows(rows))
     }
 
@@ -1605,6 +1635,60 @@ mod tests {
                 .expect("query")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn nested_rollup_children_remain_navigable() {
+        let store = setup().await;
+        let mut children = Vec::new();
+        let mut from = 0;
+        for _ in 0..4 {
+            let to = from + 10;
+            let CommitOutcome::Committed(checkpoint) = store
+                .commit(new_checkpoint("ch", from, to, 10))
+                .await
+                .expect("commit")
+            else {
+                panic!("checkpoint commit")
+            };
+            children.push(*checkpoint);
+            from = to;
+        }
+        let first = &children[0];
+        let last = &children[3];
+        let ids: Vec<String> = children.iter().map(|c| c.id.clone()).collect();
+        let CommitOutcome::Committed(rollup) = store
+            .commit_rollup(
+                NewCheckpoint {
+                    channel_id: "ch".into(),
+                    level: 1,
+                    kind: CheckpointKind::Rollup,
+                    title: "rollup".into(),
+                    summary: "summary".into(),
+                    covers_from: first.start_boundary(),
+                    covers_to: last.end_boundary(),
+                    covers_from_at: first.covers_from_at,
+                    covers_to_at: last.covers_to_at,
+                    covers_from_message_id: None,
+                    covers_to_message_id: None,
+                    message_count: 40,
+                    token_estimate: 10,
+                    rolls_up_from_seq: Some(first.seq),
+                    rolls_up_to_seq: Some(last.seq),
+                    model: None,
+                },
+                &ids,
+            )
+            .await
+            .expect("rollup")
+        else {
+            panic!("rollup commit")
+        };
+        let listed = store.children_of(&rollup.id).await.expect("children");
+        assert_eq!(listed.len(), 4);
+        let top = store.list_renderable("ch", 20).await.expect("renderable");
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].id, rollup.id);
     }
 
     #[tokio::test]
