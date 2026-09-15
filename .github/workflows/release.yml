@@ -7,15 +7,75 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag (e.g. v0.1.0). Defaults to git ref."
+        description: "Image tag (for example v0.5.0). Defaults to the git ref."
         required: false
 
 env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository_owner }}/spacebot
 
 jobs:
+  quality-gate:
+    name: Release quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: /tmp/spacebot-test-embedding-cache
+          key: fastembed-onnx-v1
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install interface dependencies
+        working-directory: interface
+        run: bun ci
+
+      - name: Full Rust gate
+        run: ./scripts/gate-pr.sh --ci
+
+      - name: Check metrics feature
+        run: cargo check --all-targets --features metrics
+
+      - name: Verify OpenAPI/typegen
+        run: |
+          cargo run --bin openapi-spec > /tmp/spacebot-openapi.json
+          cd interface
+          bunx openapi-typescript /tmp/spacebot-openapi.json -o /tmp/spacebot-schema-check.d.ts
+          diff -u src/api/schema.d.ts /tmp/spacebot-schema-check.d.ts
+
+      - name: Typecheck interface
+        working-directory: interface
+        run: bunx tsc --noEmit
+
+      - name: Build interface
+        working-directory: interface
+        run: bun run build
+
   verify-version:
+    name: Verify release version
+    needs: quality-gate
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
@@ -28,35 +88,36 @@ jobs:
           echo "Git tag version:    $TAG"
           echo "Cargo.toml version: $CARGO_VERSION"
           if [ "$TAG" != "$CARGO_VERSION" ]; then
-            echo "::error::Version mismatch! Git tag is v${TAG} but Cargo.toml has version ${CARGO_VERSION}. Bump the version in Cargo.toml before tagging."
+            echo "::error::Version mismatch: tag v${TAG}, Cargo.toml ${CARGO_VERSION}"
             exit 1
           fi
 
   build-binaries:
-    needs: [verify-version]
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
+    name: Build ${{ matrix.target }}
+    needs:
+      - quality-gate
+      - verify-version
+    if: always() && needs.quality-gate.result == 'success' && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-24.04
-            archive: tar.gz
             os: linux
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            archive: tar.gz
             os: linux
           - target: aarch64-apple-darwin
             runner: macos-15
-            archive: tar.gz
             os: macos
           - target: x86_64-apple-darwin
             runner: macos-15-intel
-            archive: tar.gz
             os: macos
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
 
@@ -66,41 +127,42 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.97.1
           targets: ${{ matrix.target }}
 
-      - name: Install system dependencies (Linux)
-        if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
 
-      - name: Install system dependencies (macOS)
-        if: matrix.os == 'macos'
-        run: brew install protobuf
-
-      - name: Install Node
-        uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: 22
+          key: release-${{ matrix.target }}
 
-      - name: Install bun
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
 
       - name: Build frontend
+        shell: bash
         env:
           SPACEBOT_SKIP_FRONTEND_BUILD: "1"
         run: |
-          cd interface && rm -f bun.lock && bun install && cd ..
+          cd interface
+          bun ci
+          cd ..
           ./scripts/build-opencode-embed.sh
-          cd interface && bun run build
+          cd interface
+          bun run build
 
       - name: Determine version tag
         id: version
+        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             VERSION="${{ github.event.inputs.tag }}"
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
           else
-            VERSION="dev-$(echo $GITHUB_SHA | head -c 7)"
+            VERSION="dev-$(echo "$GITHUB_SHA" | head -c 7)"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -108,23 +170,30 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binary
+        shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          mkdir -p spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}
-          cp spacebot spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}/
-          tar -czvf ../../../spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }} spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          VERSION="${{ steps.version.outputs.version }}"
+          DIR="spacebot-${VERSION}-${{ matrix.target }}"
+          mkdir -p "$DIR"
+          cp "target/${{ matrix.target }}/release/spacebot" "$DIR/spacebot"
+          tar -czf "spacebot-${VERSION}-${{ matrix.target }}.tar.gz" "$DIR"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: spacebot-${{ matrix.target }}
-          path: spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
-          retention-days: 1
+          path: spacebot-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   build-docker:
-    needs: [verify-version]
-    if: always() && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
+    name: Build Docker ${{ matrix.platform }}
+    needs:
+      - quality-gate
+      - verify-version
+    if: always() && needs.quality-gate.result == 'success' && (needs.verify-version.result == 'success' || needs.verify-version.result == 'skipped')
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
@@ -132,6 +201,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -141,8 +211,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -153,40 +222,40 @@ jobs:
 
       - name: Determine version tag
         id: version
+        shell: bash
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             VERSION="${{ github.event.inputs.tag }}"
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/}"
           else
-            VERSION="dev-$(echo $GITHUB_SHA | head -c 7)"
+            VERSION="dev-$(echo "$GITHUB_SHA" | head -c 7)"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Platform pair
         id: platform
-        run: echo "pair=$(echo ${{ matrix.platform }} | tr '/' '-')" >> "$GITHUB_OUTPUT"
+        run: echo "pair=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build and push platform image
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ env.IMAGE }}:build-${{ steps.platform.outputs.pair }}
-          cache-from: type=gha,scope=build-${{ steps.platform.outputs.pair }}
-          cache-to: type=gha,mode=max,scope=build-${{ steps.platform.outputs.pair }}
+          tags: ${{ env.IMAGE }}:build-${{ steps.platform.outputs.pair }}-${{ github.sha }}
+          cache-from: type=gha,scope=release-${{ steps.platform.outputs.pair }}
+          cache-to: type=gha,mode=max,scope=release-${{ steps.platform.outputs.pair }}
 
   merge-docker:
+    name: Publish multi-arch image
     needs: build-docker
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
       packages: write
-
     steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -200,79 +269,63 @@ jobs:
           docker buildx imagetools create \
             --tag ${{ env.IMAGE }}:${{ needs.build-docker.outputs.version }} \
             --tag ${{ env.IMAGE }}:latest \
-            ${{ env.IMAGE }}:build-linux-amd64 \
-            ${{ env.IMAGE }}:build-linux-arm64
+            ${{ env.IMAGE }}:build-linux-amd64-${{ github.sha }} \
+            ${{ env.IMAGE }}:build-linux-arm64-${{ github.sha }}
 
-      - name: Log in to Fly registry
-        if: github.repository_owner == 'spacedriveapp'
-        uses: docker/login-action@v3
-        with:
-          registry: registry.fly.io
-          username: x
-          password: ${{ secrets.FLY_API_TOKEN }}
-
-      - name: Push to Fly registry
-        if: github.repository_owner == 'spacedriveapp'
-        run: |
-          docker buildx imagetools create \
-            --tag registry.fly.io/spacebot-image:${{ needs.build-docker.outputs.version }} \
-            --tag registry.fly.io/spacebot-image:latest \
-            ${{ env.IMAGE }}:latest
-
-      - name: Roll out to hosted instances
-        if: github.repository_owner == 'spacedriveapp'
-        run: |
-          curl -sf -X POST https://api.spacebot.sh/api/admin/rollout \
-            -H "Content-Type: application/json" \
-            -H "X-Internal-Key: ${{ secrets.PLATFORM_INTERNAL_KEY }}" \
-            -d '{"image_tag": "${{ needs.build-docker.outputs.version }}"}'
+      - name: Inspect published manifest
+        run: docker buildx imagetools inspect ${{ env.IMAGE }}:${{ needs.build-docker.outputs.version }}
 
   create-release:
+    name: Create GitHub Release
     needs:
+      - quality-gate
       - build-binaries
       - merge-docker
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all binary artifacts
+      - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
           path: binaries
           pattern: spacebot-*
           merge-multiple: false
 
-      - name: Flatten artifacts
+      - name: Prepare release assets and checksums
         run: |
           mkdir -p release-assets
-          find binaries -name "*.tar.gz" -exec cp {} release-assets/ \;
-          find binaries -name "*.zip" -exec cp {} release-assets/ \;
-          ls -la release-assets/
+          find binaries -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
+          cd release-assets
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-binaries.outputs.version }}
           generate_release_notes: true
-          files: release-assets/*
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.tar.gz
+            release-assets/SHA256SUMS
 
   update-homebrew:
+    name: Update upstream Homebrew tap
     needs:
       - build-binaries
       - create-release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository_owner == 'spacedriveapp'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: binaries
@@ -283,7 +336,7 @@ jobs:
         id: sha
         run: |
           for arch in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
-            FILE=$(find binaries -name "*${arch}*" | head -1)
+            FILE=$(find binaries -name "*${arch}*.tar.gz" | head -1)
             KEY=$(echo "$arch" | tr '-' '_')
             echo "${KEY}=$(shasum -a 256 "$FILE" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           done
@@ -305,8 +358,7 @@ jobs:
           SHA_ARM_LINUX="${{ steps.sha.outputs.aarch64_unknown_linux_gnu }}"
           SHA_X86_LINUX="${{ steps.sha.outputs.x86_64_unknown_linux_gnu }}"
 
-          # Write formula (sed strips 10 leading spaces from the YAML indentation)
-          sed 's/^          //' > tap/Formula/spacebot.rb <<RUBY
+          cat > tap/Formula/spacebot.rb <<RUBY
           class Spacebot < Formula
             desc "Agentic LLM system with specialized processes"
             homepage "https://github.com/${REPO}"
