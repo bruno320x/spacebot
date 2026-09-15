@@ -311,6 +311,7 @@ fn choose_merge_pair(first: &Memory, second: &Memory) -> (Memory, Memory) {
 }
 
 fn merged_memory_content(winner: String, loser: &str) -> String {
+<<<<<<< ours
     // Canonical merge (upstream #604): keep the importance-winner's content as
     // the single canonical version instead of concatenating
     // `winner\n\nloser`. Concatenation bloated a single memory with many
@@ -323,6 +324,27 @@ fn merged_memory_content(winner: String, loser: &str) -> String {
         return winner_trimmed.to_string();
     }
     loser_trimmed.to_string()
+=======
+    let winner_trimmed = winner.trim_end();
+    let loser_trimmed = loser.trim_end();
+
+    // Near-duplicates (merge fires at 0.95 cosine similarity) are NOT glued
+    // together — concatenation produced bloated memories holding many reworded
+    // copies of the same fact. Keep the importance-winner's content (chosen by
+    // choose_merge_pair) as the single canonical version, falling back to the
+    // loser only if the winner is empty. Either way the size cap below applies.
+    let canonical = if winner_trimmed.is_empty() {
+        loser_trimmed
+    } else {
+        winner_trimmed
+    };
+
+    if canonical.len() <= MAX_MERGED_MEMORY_CONTENT_BYTES {
+        return canonical.to_string();
+    }
+    let boundary = canonical.floor_char_boundary(MAX_MERGED_MEMORY_CONTENT_BYTES);
+    canonical[..boundary].to_string()
+>>>>>>> theirs
 }
 
 async fn merge_pair(
@@ -584,10 +606,16 @@ mod tests {
             .expect("failed to load survivor")
             .expect("survivor should exist");
         assert_eq!(updated_survivor.id, survivor.id);
+<<<<<<< ours
         // Canonical merge (#604): the importance-winner's content survives
         // as-is; the loser's reworded copy is NOT concatenated.
         assert_eq!(updated_survivor.content, "rust memory maintenance");
         assert!(!updated_survivor.content.contains("updated"));
+=======
+        // Canonical merge keeps the winner's content (importance-winner = survivor at 0.9).
+        // The loser ("rust memory maintenance updated") is NOT appended.
+        assert_eq!(updated_survivor.content, "rust memory maintenance");
+>>>>>>> theirs
 
         let forgotten_duplicate = store
             .load(&duplicate.id)
@@ -750,11 +778,17 @@ mod tests {
             .await
             .expect("failed to load survivor")
             .expect("survivor should exist");
+<<<<<<< ours
         // Canonical merge (#604): survivor (highest importance) content is
         // kept whole; duplicate rewordings are dropped, not concatenated.
         assert_eq!(refreshed_survivor.content, "durable rust maintenance note");
         assert!(!refreshed_survivor.content.contains("update A"));
         assert!(!refreshed_survivor.content.contains("update B"));
+=======
+        // Canonical merge keeps the winner's content (importance-winner = survivor at 0.9).
+        // The losers' text ("update A", "update B") is NOT appended.
+        assert_eq!(refreshed_survivor.content, "durable rust maintenance note");
+>>>>>>> theirs
 
         for duplicate_id in [&duplicate_a.id, &duplicate_b.id] {
             let duplicate = store
@@ -787,6 +821,27 @@ mod tests {
             }),
             "expected duplicate_b associations to rewire to survivor"
         );
+    }
+
+    #[test]
+    fn test_merged_content_keeps_winner_not_concatenation() {
+        let winner = "User prefers concise answers.".to_string();
+        let loser = "The user likes short, concise replies.";
+        let merged = merged_memory_content(winner.clone(), loser);
+        // Near-duplicates (merge fires at 0.95 similarity) must NOT be glued together,
+        // and the importance-winner's content is kept as canonical.
+        assert!(
+            !merged.contains("\n\n"),
+            "must not concatenate near-duplicates"
+        );
+        assert_eq!(merged, winner);
+    }
+
+    #[test]
+    fn test_merged_content_substring_short_circuit_unchanged() {
+        let winner = "User prefers concise answers including examples.".to_string();
+        let loser = "User prefers concise answers";
+        assert_eq!(merged_memory_content(winner.clone(), loser), winner);
     }
 
     #[tokio::test]
