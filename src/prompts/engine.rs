@@ -196,6 +196,7 @@ impl PromptEngine {
             "memory_persistence",
             crate::prompts::text::get("memory_persistence"),
         )?;
+        env.add_template("active_recall", crate::prompts::text::get("active_recall"))?;
         env.add_template("ingestion", crate::prompts::text::get("ingestion"))?;
         env.add_template("cortex_chat", crate::prompts::text::get("cortex_chat"))?;
         env.add_template(
@@ -830,6 +831,7 @@ impl PromptEngine {
         claim_unowned: bool,
         instance_is_empty: bool,
     ) -> Result<String> {
+<<<<<<< ours
         self.render(
             "autonomy_channel",
             context! {
@@ -845,6 +847,28 @@ impl PromptEngine {
                 claim_unowned => claim_unowned,
                 instance_is_empty => instance_is_empty,
             },
+=======
+        self.render_channel_prompt_with_links(
+            identity_context,
+            memory_bulletin,
+            None,
+            skills_prompt,
+            worker_capabilities,
+            conversation_context,
+            status_text,
+            coalesce_hint,
+            available_channels,
+            sandbox_enabled,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+>>>>>>> theirs
         )
     }
 
@@ -982,9 +1006,56 @@ impl PromptEngine {
     /// Render the channel system prompt along with its block map.
     pub fn render_channel_prompt(
         &self,
+<<<<<<< ours
         inputs: ChannelPromptInputs,
     ) -> Result<blocks::SegmentedPrompt> {
         self.render_segmented("channel", inputs.into_inputs())
+=======
+        identity_context: Option<String>,
+        memory_bulletin: Option<String>,
+        knowledge_synthesis: Option<String>,
+        skills_prompt: Option<String>,
+        worker_capabilities: String,
+        conversation_context: Option<String>,
+        status_text: Option<String>,
+        coalesce_hint: Option<String>,
+        available_channels: Option<String>,
+        sandbox_enabled: bool,
+        org_context: Option<String>,
+        adapter_prompt: Option<String>,
+        project_context: Option<String>,
+        backfill_transcript: Option<String>,
+        working_memory: Option<String>,
+        channel_activity_map: Option<String>,
+        participant_context: Option<String>,
+        active_recall_context: Option<String>,
+        direct_mode: bool,
+    ) -> Result<String> {
+        self.render(
+            "channel",
+            context! {
+                identity_context => identity_context,
+                memory_bulletin => memory_bulletin,
+                skills_prompt => skills_prompt,
+                worker_capabilities => worker_capabilities,
+                conversation_context => conversation_context,
+                status_text => status_text,
+                coalesce_hint => coalesce_hint,
+                available_channels => available_channels,
+                sandbox_enabled => sandbox_enabled,
+                org_context => org_context,
+                adapter_prompt => adapter_prompt,
+                project_context => project_context,
+                backfill_transcript => backfill_transcript,
+                working_memory => working_memory,
+                channel_activity_map => channel_activity_map,
+                participant_context => participant_context,
+                active_recall_context => active_recall_context,
+                knowledge_synthesis => knowledge_synthesis,
+                direct_mode => direct_mode,
+            },
+        )
+>>>>>>> theirs
     }
 
     /// Get the configured language code.
@@ -1664,9 +1735,16 @@ mod tests {
                 "No active tasks.\n",
                 None,
                 None,
+<<<<<<< ours
                 1,
                 1,
                 false,
+=======
+                None,
+                None,
+                None,
+                None,
+>>>>>>> theirs
                 false,
             )
             .expect("unknown level prompt should render");
@@ -1720,6 +1798,38 @@ mod tests {
             .render_system_memory_persistence_contract_retry()
             .expect("contract retry should render");
         assert!(retry.contains("memory_persistence_complete"));
+    }
+
+    #[test]
+    fn renders_active_recall_as_read_only_background_context() {
+        let engine = PromptEngine::new("en").expect("prompt engine should build");
+        let prompt = engine
+            .render_channel_prompt_with_links(
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("- Prior decision: use SQLite for local state.".to_string()),
+                false,
+            )
+            .expect("channel prompt should render");
+
+        assert!(prompt.contains("## Background Recall (READ-ONLY CONTEXT)"));
+        assert!(prompt.contains("context, not user input"));
+        assert!(prompt.contains("Prior decision: use SQLite for local state."));
     }
 }
 // to support multiple languages at compile time.
