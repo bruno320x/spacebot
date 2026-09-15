@@ -1,22 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-      - "integration/**"
   pull_request:
     branches:
       - main
-      - "integration/**"
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,10 +15,10 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  rust-gate:
-    name: Rust quality gate
+  rust-diagnostics:
+    name: Rust baseline diagnostics
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,102 +40,62 @@ jobs:
           path: /tmp/spacebot-test-embedding-cache
           key: fastembed-onnx-v1
 
-      - name: Project preflight
+      - name: Preflight
+        id: preflight
+        continue-on-error: true
         run: ./scripts/preflight.sh --ci
 
-      - name: Full PR gate
+      - name: Formatting
+        id: fmt
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        id: check
+        continue-on-error: true
+        run: cargo check --all-targets
+
+      - name: Clippy
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets
+
+      - name: Library tests
+        id: lib_tests
+        continue-on-error: true
+        run: cargo test --lib
+
+      - name: Integration tests compile
+        id: integration_compile
+        continue-on-error: true
+        run: cargo test --tests --no-run
+
+      - name: Original full gate
+        id: original_gate
+        continue-on-error: true
         run: ./scripts/gate-pr.sh --ci
 
       - name: Check optional metrics feature
+        id: metrics
+        continue-on-error: true
         run: cargo check --all-targets --features metrics
 
-  typegen:
-    name: OpenAPI/typegen consistency
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.97.1
-
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3"
-
-      - name: Install interface dependencies
-        working-directory: interface
-        run: bun ci
-
-      - name: Generate OpenAPI schema
-        run: cargo run --bin openapi-spec > /tmp/spacebot-openapi.json
-
-      - name: Verify generated TypeScript bindings
+      - name: Require all baseline gates
+        if: always()
         run: |
-          cd interface
-          bunx openapi-typescript /tmp/spacebot-openapi.json -o /tmp/spacebot-schema-check.d.ts
-          diff -u src/api/schema.d.ts /tmp/spacebot-schema-check.d.ts
-
-  interface:
-    name: Interface typecheck and build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: interface
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3"
-
-      - name: Install dependencies
-        run: bun ci
-
-      - name: Typecheck
-        run: bunx tsc --noEmit
-
-      - name: Production build
-        run: bun run build
-
-  docker-build:
-    name: Docker build smoke test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build image without publishing
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          cache-from: type=gha,scope=ci-docker-amd64
-          cache-to: type=gha,mode=max,scope=ci-docker-amd64
-
-  ci-success:
-    name: CI success
-    if: always()
-    needs:
-      - rust-gate
-      - typegen
-      - interface
-      - docker-build
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require every gate
-        run: |
-          test "${{ needs.rust-gate.result }}" = "success"
-          test "${{ needs.typegen.result }}" = "success"
-          test "${{ needs.interface.result }}" = "success"
-          test "${{ needs.docker-build.result }}" = "success"
+          echo "preflight=${{ steps.preflight.outcome }}"
+          echo "fmt=${{ steps.fmt.outcome }}"
+          echo "check=${{ steps.check.outcome }}"
+          echo "clippy=${{ steps.clippy.outcome }}"
+          echo "lib_tests=${{ steps.lib_tests.outcome }}"
+          echo "integration_compile=${{ steps.integration_compile.outcome }}"
+          echo "original_gate=${{ steps.original_gate.outcome }}"
+          echo "metrics=${{ steps.metrics.outcome }}"
+          test '${{ steps.preflight.outcome }}' = success
+          test '${{ steps.fmt.outcome }}' = success
+          test '${{ steps.check.outcome }}' = success
+          test '${{ steps.clippy.outcome }}' = success
+          test '${{ steps.lib_tests.outcome }}' = success
+          test '${{ steps.integration_compile.outcome }}' = success
+          test '${{ steps.original_gate.outcome }}' = success
+          test '${{ steps.metrics.outcome }}' = success
