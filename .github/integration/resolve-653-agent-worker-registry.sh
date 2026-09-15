@@ -103,11 +103,16 @@ resolve('src/main.rs', ['theirs'])
 resolve('src/opencode/worker.rs', ['theirs', 'theirs'])
 opencode = Path('src/opencode/worker.rs')
 text = opencode.read_text()
-old = 'crate::secrets::scrub::scrub_leaks(&scrubbed);'
-new = 'crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.secret_scan_mode);'
-if text.count(old) != 2:
-    raise SystemExit(f'opencode worker: expected two operation-result scrubs, found {text.count(old)}')
-text = text.replace(old, new)
+replacements = {
+    'crate::secrets::scrub::scrub_leaks(&scrubbed_result);':
+        'crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed_result, self.secret_scan_mode);',
+    'crate::secrets::scrub::scrub_leaks(&scrubbed);':
+        'crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.secret_scan_mode);',
+}
+for old, new in replacements.items():
+    if text.count(old) != 1:
+        raise SystemExit(f'opencode worker: expected one configured scrub for {old}, found {text.count(old)}')
+    text = text.replace(old, new, 1)
 opencode.write_text(text)
 
 # Keep fork evidence-gate tests and use the upstream name that reflects the
