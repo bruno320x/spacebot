@@ -266,6 +266,7 @@ impl SynthesisTaskBackoff {
     }
 }
 
+<<<<<<< ours
 fn synthesis_task_backoff_delay(failure_count: u32) -> Duration {
     let exponent = failure_count.saturating_sub(1).min(10);
     let multiplier = 1_u64 << exponent;
@@ -274,6 +275,17 @@ fn synthesis_task_backoff_delay(failure_count: u32) -> Duration {
         .min(SYNTHESIS_TASK_BACKOFF_MAX_SECS);
 
     Duration::from_secs(seconds)
+=======
+#[derive(Debug, Clone)]
+struct BranchTracker {
+    branch_id: BranchId,
+    channel_id: ChannelId,
+    started_at: Instant,
+    /// Currently set at branch spawn only. To make this truly activity-based,
+    /// send a ProcessEvent variant from the hook on tool completions and text
+    /// deltas, then update this field in the cortex event loop.
+    last_activity_at: Instant,
+>>>>>>> theirs
 }
 
 async fn collect_synthesis_task(
@@ -361,6 +373,81 @@ struct HealthRuntimeState {
 }
 
 impl HealthRuntimeState {
+<<<<<<< ours
+=======
+    fn track_worker_start(
+        &mut self,
+        worker_id: WorkerId,
+        channel_id: Option<ChannelId>,
+        worker_type: String,
+    ) {
+        let now = Instant::now();
+        self.worker_trackers.insert(
+            worker_id,
+            WorkerTracker {
+                worker_id,
+                channel_id,
+                worker_type,
+                started_at: now,
+                last_activity_at: now,
+                is_idle: false,
+            },
+        );
+    }
+
+    fn track_worker_idle(&mut self, worker_id: WorkerId) {
+        if let Some(tracker) = self.worker_trackers.get_mut(&worker_id) {
+            tracker.is_idle = true;
+        }
+    }
+
+    fn track_worker_activity(&mut self, worker_id: WorkerId) {
+        if let Some(tracker) = self.worker_trackers.get_mut(&worker_id) {
+            tracker.last_activity_at = Instant::now();
+            // Any activity means the worker is no longer idle.
+            tracker.is_idle = false;
+        }
+    }
+
+    fn track_worker_complete(&mut self, worker_id: WorkerId, success: bool, threshold: u8) {
+        let Some(worker_type) = self
+            .worker_trackers
+            .remove(&worker_id)
+            .map(|tracker| tracker.worker_type)
+        else {
+            return;
+        };
+        self.update_breaker(
+            format!("worker_type:{worker_type}"),
+            !success,
+            threshold.max(1),
+        );
+    }
+
+    fn track_branch_start(&mut self, branch_id: BranchId, channel_id: ChannelId) {
+        let now = Instant::now();
+        self.branch_trackers.insert(
+            branch_id,
+            BranchTracker {
+                branch_id,
+                channel_id,
+                started_at: now,
+                last_activity_at: now,
+            },
+        );
+    }
+
+    fn track_branch_complete(&mut self, branch_id: BranchId) {
+        if let Some(tracker) = self.branch_trackers.remove(&branch_id) {
+            let elapsed = tracker.started_at.elapsed().as_millis() as u64;
+            self.branch_latency_window_ms.push_back(elapsed);
+            while self.branch_latency_window_ms.len() > BRANCH_LATENCY_WINDOW_SIZE {
+                self.branch_latency_window_ms.pop_front();
+            }
+        }
+    }
+
+>>>>>>> theirs
     fn track_tool_completed(&mut self, tool_name: &str, result: &str, threshold: u8) {
         let Some(structured_success) = parse_structured_success_flag(result) else {
             return;
@@ -406,7 +493,146 @@ fn parse_structured_success_flag(result: &str) -> Option<bool> {
     object.get("ok").and_then(|value| value.as_bool())
 }
 
+<<<<<<< ours
 /// The cortex observes system-wide activity and writes to the memory store.
+=======
+fn kill_target_last_activity(target: &KillTarget) -> Instant {
+    match target {
+        KillTarget::Worker(tracker) => tracker.last_activity_at,
+        KillTarget::Branch(tracker) => tracker.last_activity_at,
+    }
+}
+
+fn kill_target_id(target: &KillTarget) -> u128 {
+    match target {
+        KillTarget::Worker(tracker) => tracker.worker_id.as_u128(),
+        KillTarget::Branch(tracker) => tracker.branch_id.as_u128(),
+    }
+}
+
+fn build_kill_targets(
+    overdue_workers: Vec<WorkerTracker>,
+    overdue_branches: Vec<BranchTracker>,
+) -> Vec<KillTarget> {
+    let mut targets = Vec::with_capacity(overdue_workers.len() + overdue_branches.len());
+    targets.extend(overdue_workers.into_iter().map(KillTarget::Worker));
+    targets.extend(overdue_branches.into_iter().map(KillTarget::Branch));
+    targets.sort_by(|left, right| {
+        let left_activity = kill_target_last_activity(left);
+        let right_activity = kill_target_last_activity(right);
+        if left_activity == right_activity {
+            kill_target_id(left).cmp(&kill_target_id(right))
+        } else {
+            left_activity.cmp(&right_activity)
+        }
+    });
+    targets
+}
+
+fn is_terminal_control_result(result: ControlActionResult) -> bool {
+    matches!(
+        result,
+        ControlActionResult::Cancelled
+            | ControlActionResult::AlreadyTerminal
+            | ControlActionResult::NotFound
+    )
+}
+
+fn is_cancelled_control_result(result: ControlActionResult) -> bool {
+    matches!(result, ControlActionResult::Cancelled)
+}
+
+fn take_lagged_control_flag(state: &mut HealthRuntimeState) -> bool {
+    let lagged = state.lagged_control_since_last_tick;
+    state.lagged_control_since_last_tick = false;
+    lagged
+}
+
+fn detached_timeout_transition(
+    metadata: &serde_json::Value,
+    retry_limit: u8,
+) -> (u64, bool, TaskStatus) {
+    let current_timeout_count = metadata
+        .get("supervisor_timeout_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let next_timeout_count = current_timeout_count.saturating_add(1);
+    let exhausted = next_timeout_count > retry_limit as u64;
+    let status = if exhausted {
+        TaskStatus::Backlog
+    } else {
+        TaskStatus::Ready
+    };
+    (next_timeout_count, exhausted, status)
+}
+
+fn claim_detached_completion(lifecycle: &std::sync::atomic::AtomicU8) -> bool {
+    loop {
+        let current = lifecycle.load(Ordering::Acquire);
+        let claimable = current == crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_ACTIVE
+            || current == crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_KILLING;
+        if !claimable {
+            return false;
+        }
+
+        if lifecycle
+            .compare_exchange(
+                current,
+                crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_COMPLETING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+#[doc(hidden)]
+pub async fn register_detached_worker_for_pickup(
+    process_control_registry: &ProcessControlRegistry,
+    task_store: &crate::tasks::TaskStore,
+    agent_id: &AgentId,
+    task_number: i64,
+    worker_id: WorkerId,
+) -> anyhow::Result<(Arc<AtomicU8>, tokio::sync::oneshot::Receiver<()>)> {
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    let lifecycle = Arc::new(AtomicU8::new(
+        crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_ACTIVE,
+    ));
+
+    process_control_registry
+        .register_detached_worker(DetachedWorkerControl::new(
+            worker_id,
+            agent_id.clone(),
+            task_number,
+            cancel_tx,
+            lifecycle.clone(),
+        ))
+        .await;
+
+    if let Err(error) = task_store
+        .update(
+            task_number,
+            UpdateTaskInput {
+                worker_id: Some(worker_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        process_control_registry
+            .unregister_detached_worker(worker_id)
+            .await;
+        return Err(error.into());
+    }
+
+    Ok((lifecycle, cancel_rx))
+}
+
+/// The cortex observes system-wide activity and maintains the memory bulletin.
+>>>>>>> theirs
 pub struct Cortex {
     pub deps: AgentDeps,
     pub hook: CortexHook,
@@ -757,10 +983,66 @@ impl Cortex {
             .prune_dead_channels()
             .await;
 
+<<<<<<< ours
         let pending_breaker_trips = {
             let mut state = self.health_runtime_state.write().await;
             std::mem::take(&mut state.pending_breaker_trip_events)
+=======
+        let now = Instant::now();
+        let (lagged_control, pending_breaker_trips, overdue_workers, overdue_branches, active_branches, active_workers) = {
+            let mut state = self.health_runtime_state.write().await;
+            let lagged_control = take_lagged_control_flag(&mut state);
+
+            let pending_breaker_trips = std::mem::take(&mut state.pending_breaker_trip_events);
+
+            let overdue_workers = if lagged_control {
+                Vec::new()
+            } else {
+                state
+                    .worker_trackers
+                    .values()
+                    .filter(|tracker| {
+                        !tracker.is_idle
+                            && now.duration_since(tracker.last_activity_at) >= worker_timeout
+                    })
+                    .cloned()
+                    .collect()
+            };
+
+            let overdue_branches = if lagged_control {
+                Vec::new()
+            } else {
+                state
+                    .branch_trackers
+                    .values()
+                    .filter(|tracker| now.duration_since(tracker.last_activity_at) >= branch_timeout)
+                    .cloned()
+                    .collect()
+            };
+
+            let active_branches = state.branch_trackers.len();
+            let active_workers = state.worker_trackers.len();
+
+            (
+                lagged_control,
+                pending_breaker_trips,
+                overdue_workers,
+                overdue_branches,
+                active_branches,
+                active_workers,
+            )
+>>>>>>> theirs
         };
+
+        if !lagged_control {
+            tracing::debug!(
+                active_branches,
+                active_workers,
+                overdue_branches = overdue_branches.len(),
+                overdue_workers = overdue_workers.len(),
+                "cortex health tick"
+            );
+        }
 
         for trip in pending_breaker_trips {
             logger.log(
@@ -784,6 +1066,8 @@ impl Cortex {
                 ),
                 Some(serde_json::json!({
                     "pruned_dead_channels": pruned_dead_channels,
+                    "active_branches": active_branches,
+                    "active_workers": active_workers,
                 })),
             );
         }
@@ -3062,6 +3346,390 @@ mod tests {
     }
 
     #[test]
+<<<<<<< ours
+=======
+    fn detached_timeout_transition_requeues_until_limit_then_quarantines() {
+        let metadata = serde_json::json!({});
+        let (count1, exhausted1, status1) = detached_timeout_transition(&metadata, 2);
+        assert_eq!(count1, 1);
+        assert!(!exhausted1);
+        assert_eq!(status1, TaskStatus::Ready);
+        assert_eq!(status1.as_str(), "ready");
+
+        let metadata = serde_json::json!({ "supervisor_timeout_count": 2 });
+        let (count2, exhausted2, status2) = detached_timeout_transition(&metadata, 2);
+        assert_eq!(count2, 3);
+        assert!(exhausted2);
+        assert_eq!(status2, TaskStatus::Backlog);
+        assert_eq!(status2.as_str(), "backlog");
+    }
+
+    #[test]
+    fn claim_detached_completion_allows_active_or_killing_exactly_once() {
+        let lifecycle = std::sync::atomic::AtomicU8::new(
+            crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_ACTIVE,
+        );
+        assert!(claim_detached_completion(&lifecycle));
+        assert!(!claim_detached_completion(&lifecycle));
+
+        let lifecycle = std::sync::atomic::AtomicU8::new(
+            crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_KILLING,
+        );
+        assert!(claim_detached_completion(&lifecycle));
+    }
+
+    #[tokio::test]
+    async fn detached_worker_completion_takes_priority_when_cancel_signal_and_worker_finish_simultaneously()
+     {
+        let lifecycle = Arc::new(AtomicU8::new(
+            crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_ACTIVE,
+        ));
+
+        let (_cancel_tx, mut detached_cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        drop(_cancel_tx);
+
+        let worker_future = future::ready::<Result<String, String>>(Ok("done".to_string()));
+        tokio::pin!(worker_future);
+
+        let worker_result = tokio::select! {
+            biased;
+            result = &mut worker_future => Some(result),
+            _ = &mut detached_cancel_rx => worker_future.as_mut().now_or_never(),
+        };
+
+        let completion_won = match worker_result {
+            Some(Ok(result)) => {
+                assert_eq!(result, "done");
+                claim_detached_completion(&lifecycle)
+            }
+            _ => false,
+        };
+
+        assert!(completion_won);
+        assert!(!claim_detached_completion(&lifecycle));
+        assert_eq!(
+            lifecycle.load(Ordering::Acquire),
+            crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_COMPLETING
+        );
+    }
+
+    #[tokio::test]
+    async fn register_detached_worker_for_pickup_registers_entry_and_updates_task_record() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("failed to create sqlite memory pool");
+
+        sqlx::query(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                task_number INTEGER NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'backlog',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                owner_agent_id TEXT NOT NULL,
+                assigned_agent_id TEXT NOT NULL,
+                subtasks TEXT,
+                metadata TEXT,
+                source_memory_id TEXT,
+                worker_id TEXT,
+                created_by TEXT NOT NULL,
+                approved_at TEXT,
+                approved_by TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                completed_at TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed to create tasks table");
+
+        let task_store = TaskStore::new(pool.clone());
+        let registry = crate::agent::process_control::ProcessControlRegistry::new();
+        let agent_id: crate::AgentId = Arc::from("agent-1");
+        let task_number = 2_i64;
+        let worker_id = uuid::Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO tasks (
+                id, task_number, title, description, status, priority,
+                owner_agent_id, assigned_agent_id,
+                subtasks, metadata, source_memory_id, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(task_number)
+        .bind("test task")
+        .bind(Some("description".to_string()))
+        .bind("ready")
+        .bind("medium")
+        .bind(&*agent_id)
+        .bind(&*agent_id)
+        .bind("[]")
+        .bind("{}")
+        .bind(Option::<String>::None)
+        .bind("system")
+        .execute(&pool)
+        .await
+        .expect("failed to insert task fixture");
+
+        let (lifecycle, _cancel_rx) = super::register_detached_worker_for_pickup(
+            &registry,
+            &task_store,
+            &agent_id,
+            task_number,
+            worker_id,
+        )
+        .await
+        .expect("bootstrap should succeed");
+        drop(_cancel_rx);
+
+        assert_eq!(
+            lifecycle.load(Ordering::Acquire),
+            crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_ACTIVE
+        );
+        assert!(
+            registry.unregister_detached_worker(worker_id).await,
+            "control entry should exist after successful registration"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_detached_worker_for_pickup_unregisters_control_on_task_update_error() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("failed to create sqlite memory pool");
+
+        sqlx::query(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                task_number INTEGER NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'backlog',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                owner_agent_id TEXT NOT NULL,
+                assigned_agent_id TEXT NOT NULL,
+                subtasks TEXT,
+                metadata TEXT,
+                source_memory_id TEXT,
+                worker_id TEXT,
+                created_by TEXT NOT NULL,
+                approved_at TEXT,
+                approved_by TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                completed_at TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed to create tasks table");
+
+        let task_store = TaskStore::new(pool.clone());
+        let registry = crate::agent::process_control::ProcessControlRegistry::new();
+        let agent_id: crate::AgentId = Arc::from("agent-1");
+        let task_number = 1_i64;
+        let worker_id = uuid::Uuid::new_v4();
+
+        sqlx::query(
+            "INSERT INTO tasks (
+                id, task_number, title, description, status, priority,
+                owner_agent_id, assigned_agent_id,
+                subtasks, metadata, source_memory_id, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(task_number)
+        .bind("test task")
+        .bind(Some("description".to_string()))
+        .bind("ready")
+        .bind("medium")
+        .bind(&*agent_id)
+        .bind(&*agent_id)
+        .bind("[]")
+        .bind("{}")
+        .bind(Option::<String>::None)
+        .bind("system")
+        .execute(&pool)
+        .await
+        .expect("failed to insert task fixture");
+
+        sqlx::query("DROP TABLE tasks")
+            .execute(&pool)
+            .await
+            .expect("failed to drop tasks table");
+
+        let result = super::register_detached_worker_for_pickup(
+            &registry,
+            &task_store,
+            &agent_id,
+            task_number,
+            worker_id,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(
+            !registry.unregister_detached_worker(worker_id).await,
+            "detached control entry should have been cleaned up on update failure"
+        );
+    }
+
+    #[test]
+    fn bulletin_refresh_circuit_closes_after_cooldown() {
+        let mut failures = BULLETIN_REFRESH_CIRCUIT_OPEN_THRESHOLD;
+        let mut circuit_open = true;
+        let now = Instant::now();
+        let mut next_allowed_at = now + std::time::Duration::from_millis(5);
+
+        let closed_early = maybe_close_bulletin_refresh_circuit(
+            &mut failures,
+            &mut circuit_open,
+            &mut next_allowed_at,
+            now,
+        );
+        assert!(!closed_early);
+        assert!(circuit_open);
+
+        let closed = maybe_close_bulletin_refresh_circuit(
+            &mut failures,
+            &mut circuit_open,
+            &mut next_allowed_at,
+            now + std::time::Duration::from_millis(10),
+        );
+        assert!(closed);
+        assert!(!circuit_open);
+        assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn take_lagged_control_flag_clears_after_one_tick() {
+        let mut state = HealthRuntimeState::default();
+        state.mark_control_receiver_lag();
+
+        assert!(take_lagged_control_flag(&mut state));
+        assert!(!take_lagged_control_flag(&mut state));
+    }
+
+    #[test]
+    fn build_kill_targets_orders_oldest_first_and_stable_by_id() {
+        let base = Instant::now();
+        let older = base - Duration::from_secs(20);
+        let newer = base - Duration::from_secs(5);
+        let shared_start = base - Duration::from_secs(10);
+
+        let worker_a = WorkerTracker {
+            worker_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-00000000000a")
+                .expect("valid uuid"),
+            channel_id: Some(Arc::from("channel-a")),
+            worker_type: "builtin".to_string(),
+            started_at: shared_start,
+            last_activity_at: shared_start,
+            is_idle: false,
+        };
+        let worker_b = WorkerTracker {
+            worker_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-00000000000b")
+                .expect("valid uuid"),
+            channel_id: Some(Arc::from("channel-a")),
+            worker_type: "builtin".to_string(),
+            started_at: shared_start,
+            last_activity_at: shared_start,
+            is_idle: false,
+        };
+        let branch_oldest = BranchTracker {
+            branch_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001")
+                .expect("valid uuid"),
+            channel_id: Arc::from("channel-a"),
+            started_at: older,
+            last_activity_at: older,
+        };
+        let branch_newest = BranchTracker {
+            branch_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
+                .expect("valid uuid"),
+            channel_id: Arc::from("channel-a"),
+            started_at: newer,
+            last_activity_at: newer,
+        };
+
+        let targets = build_kill_targets(
+            vec![worker_b.clone(), worker_a.clone()],
+            vec![branch_newest.clone(), branch_oldest.clone()],
+        );
+
+        let ordered_ids: Vec<String> = targets
+            .iter()
+            .map(|target| match target {
+                super::KillTarget::Worker(tracker) => tracker.worker_id.to_string(),
+                super::KillTarget::Branch(tracker) => tracker.branch_id.to_string(),
+            })
+            .collect();
+
+        assert_eq!(
+            ordered_ids,
+            vec![
+                branch_oldest.branch_id.to_string(),
+                worker_a.worker_id.to_string(),
+                worker_b.worker_id.to_string(),
+                branch_newest.branch_id.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn worker_activity_resets_idle_clock() {
+        let mut state = HealthRuntimeState::default();
+        let worker_id = uuid::Uuid::new_v4();
+        state.track_worker_start(worker_id, Some(Arc::from("ch")), "builtin".to_string());
+
+        let tracker_before = state.worker_trackers.get(&worker_id).unwrap().clone();
+        // Simulate time passing by checking that activity updates the timestamp.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        state.track_worker_activity(worker_id);
+
+        let tracker_after = state.worker_trackers.get(&worker_id).unwrap();
+        assert!(
+            tracker_after.last_activity_at > tracker_before.last_activity_at,
+            "last_activity_at should advance after track_worker_activity"
+        );
+        assert_eq!(
+            tracker_after.started_at, tracker_before.started_at,
+            "started_at should not change"
+        );
+    }
+
+    #[test]
+    fn worker_activity_noop_for_unknown_worker() {
+        let mut state = HealthRuntimeState::default();
+        // Should not panic on unknown worker ID.
+        state.track_worker_activity(uuid::Uuid::new_v4());
+    }
+
+    #[test]
+    fn terminal_control_result_includes_not_found_and_already_terminal() {
+        assert!(is_terminal_control_result(ControlActionResult::Cancelled));
+        assert!(is_terminal_control_result(ControlActionResult::NotFound));
+        assert!(is_terminal_control_result(
+            ControlActionResult::AlreadyTerminal
+        ));
+    }
+
+    #[test]
+    fn cancelled_control_result_only_matches_cancelled() {
+        assert!(is_cancelled_control_result(ControlActionResult::Cancelled));
+        assert!(!is_cancelled_control_result(ControlActionResult::NotFound));
+        assert!(!is_cancelled_control_result(
+            ControlActionResult::AlreadyTerminal
+        ));
+    }
+
+    #[test]
+>>>>>>> theirs
     fn breaker_trips_only_for_structured_failures_and_resets_on_success() {
         let mut state = HealthRuntimeState::default();
         state.track_tool_completed("shell", r#"{"success":false}"#, 2);
