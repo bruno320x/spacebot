@@ -3125,6 +3125,7 @@ pub struct EmailConfig {
     pub authority: Vec<String>,
     pub max_body_bytes: usize,
     pub max_attachment_bytes: usize,
+    pub sync_max_age_days: u64,
     pub instances: Vec<EmailInstanceConfig>,
 }
 
@@ -3152,6 +3153,7 @@ pub struct EmailInstanceConfig {
     pub authority: Vec<String>,
     pub max_body_bytes: usize,
     pub max_attachment_bytes: usize,
+    pub sync_max_age_days: u64,
 }
 
 impl std::fmt::Debug for EmailInstanceConfig {
@@ -3177,6 +3179,7 @@ impl std::fmt::Debug for EmailInstanceConfig {
             .field("authority", &self.authority)
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_attachment_bytes", &self.max_attachment_bytes)
+            .field("sync_max_age_days", &self.sync_max_age_days)
             .finish()
     }
 }
@@ -3203,6 +3206,7 @@ impl std::fmt::Debug for EmailConfig {
             .field("authority", &self.authority)
             .field("max_body_bytes", &self.max_body_bytes)
             .field("max_attachment_bytes", &self.max_attachment_bytes)
+            .field("sync_max_age_days", &self.sync_max_age_days)
             .finish()
     }
 }
