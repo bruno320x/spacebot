@@ -474,6 +474,7 @@ async fn spawn_branch(
     let agent_id = state.deps.agent_id.clone();
     let channel_id = state.channel_id.clone();
     let secrets_snapshot = state.deps.runtime_config.secrets.load().clone();
+    let scan_mode = state.deps.secret_scan_mode();
 
     let branch_span = tracing::info_span!(
         "branch.run",
@@ -516,6 +517,7 @@ async fn spawn_branch(
                 // Layer 1: exact-match redaction of known secrets from the store.
                 // Layer 2: regex-based redaction of unknown secret patterns.
                 let raw = format!("Branch failed: {error}");
+<<<<<<< ours
                 let conclusion = if let Some(store) = secrets_snapshot.as_ref() {
                     crate::secrets::scrub::scrub_with_store(&raw, store, &agent_id)
                 } else {
@@ -523,6 +525,11 @@ async fn spawn_branch(
                 };
                 let conclusion =
                     crate::secrets::scrub::scrub_leaks_with_mode(&conclusion, secret_scan_mode);
+=======
+                let store_ref: Option<&crate::secrets::store::SecretsStore> =
+                    secrets_snapshot.as_ref().as_ref().map(|s| s.as_ref());
+                let conclusion = scan_mode.apply_scrubbing_with_store(&raw, store_ref);
+>>>>>>> theirs
                 let _ = event_tx.send(crate::ProcessEvent::BranchResult {
                     agent_id,
                     branch_id,
@@ -1014,7 +1021,7 @@ async fn spawn_worker_inner(
         channel_id = %state.channel_id,
     );
     let secrets_store = state.deps.runtime_config.secrets.load().as_ref().clone();
-    let handle = spawn_worker_task(
+    let handle = spawn_worker_task_with_scan_mode(
         worker_id,
         state.deps.event_tx.clone(),
         state.deps.agent_id.clone(),
@@ -1024,9 +1031,13 @@ async fn spawn_worker_inner(
         None,
         None,
         secrets_store,
+<<<<<<< ours
         Some(state.deps.task_store.clone()),
         state.deps.runtime_config.sandbox.load().secret_scanner,
         "builtin",
+=======
+        state.deps.secret_scan_mode(),
+>>>>>>> theirs
         worker.run().instrument(worker_span),
     );
 
@@ -1143,6 +1154,7 @@ async fn spawn_opencode_worker_inner(
     let persist_directory = directory.clone();
 
     let oc_secrets_store = state.deps.runtime_config.secrets.load().as_ref().clone();
+    let scan_mode = state.deps.secret_scan_mode();
 
     // Build temporal/status context so OpenCode workers get the same system
     // info (time, model, context window) as builtin workers.
@@ -1192,17 +1204,24 @@ async fn spawn_opencode_worker_inner(
             .write()
             .await
             .insert(worker_id, input_tx);
+<<<<<<< ours
         let worker = match worker_status_text {
             Some(ref prompt) => worker.with_system_prompt(prompt),
             None => worker,
         };
+=======
+>>>>>>> theirs
         let worker = match &oc_secrets_store {
             Some(store) => worker.with_secrets_store(store.clone()),
             None => worker,
         };
+<<<<<<< ours
         let worker =
             worker.with_secret_scan_mode(state.deps.runtime_config.sandbox.load().secret_scanner);
         worker.with_sqlite_pool(state.deps.sqlite_pool.clone())
+=======
+        worker.with_secret_scan_mode(scan_mode)
+>>>>>>> theirs
     } else {
         let worker = crate::opencode::OpenCodeWorker::new(
             Some(state.channel_id.clone()),
@@ -1212,17 +1231,24 @@ async fn spawn_opencode_worker_inner(
             server_pool,
             state.deps.event_tx.clone(),
         );
+<<<<<<< ours
         let worker = match worker_status_text {
             Some(ref prompt) => worker.with_system_prompt(prompt),
             None => worker,
         };
+=======
+>>>>>>> theirs
         let worker = match &oc_secrets_store {
             Some(store) => worker.with_secrets_store(store.clone()),
             None => worker,
         };
+<<<<<<< ours
         let worker =
             worker.with_secret_scan_mode(state.deps.runtime_config.sandbox.load().secret_scanner);
         worker.with_sqlite_pool(state.deps.sqlite_pool.clone())
+=======
+        worker.with_secret_scan_mode(scan_mode)
+>>>>>>> theirs
     };
 
     let worker_id = worker.id;
@@ -1252,9 +1278,13 @@ async fn spawn_opencode_worker_inner(
         channel_id = %state.channel_id,
         worker_type = "opencode",
     );
+<<<<<<< ours
     let transcript_snapshot = worker.transcript_snapshot();
     let opencode_cancellation = worker.cancellation_session();
     let handle = spawn_worker_task(
+=======
+    let handle = spawn_worker_task_with_scan_mode(
+>>>>>>> theirs
         worker_id,
         state.deps.event_tx.clone(),
         state.deps.agent_id.clone(),
@@ -1264,9 +1294,13 @@ async fn spawn_opencode_worker_inner(
         Some(opencode_cancellation),
         Some(directory_claim),
         oc_secrets_store,
+<<<<<<< ours
         Some(state.deps.task_store.clone()),
         state.deps.runtime_config.sandbox.load().secret_scanner,
         "opencode",
+=======
+        scan_mode,
+>>>>>>> theirs
         async move {
             let result = worker.run().await.map_err(SpacebotError::from);
             let result = result?;
@@ -1318,6 +1352,7 @@ async fn spawn_opencode_worker_inner(
 
 /// Spawn an ACP-backed worker for coding tasks.
 ///
+<<<<<<< ours
 /// Instead of a Rig agent loop, this spawns an ACP-compatible CLI subprocess
 /// (Claude Code, Codex, Cursor CLI, etc.) and drives it over JSON-RPC stdio.
 pub async fn spawn_acp_worker_from_state(
@@ -1540,11 +1575,17 @@ async fn spawn_acp_worker_inner(
 /// before being sent via the event — tool secret values are replaced with
 /// `[REDACTED:<name>]` so they never propagate to channel context.
 #[allow(clippy::too_many_arguments)]
+=======
+/// The result text is scrubbed through the secret store's tool secret values
+/// before being sent via the event — tool secret values are replaced with
+/// `[REDACTED:<name>]` so they never propagate to channel context.
+>>>>>>> theirs
 pub(crate) fn spawn_worker_task<F>(
     worker_id: WorkerId,
     event_tx: broadcast::Sender<ProcessEvent>,
     agent_id: crate::AgentId,
     channel_id: Option<ChannelId>,
+<<<<<<< ours
     run_logger: ProcessRunLogger,
     transcript_snapshot: WorkerTranscriptSnapshot,
     opencode_cancellation: Option<
@@ -1575,6 +1616,39 @@ where
     let handle = tokio::spawn(async move {
         let opencode_directory_claim = opencode_directory_claim;
         let _task_cancel_tx = task_cancel_tx;
+=======
+    secrets_store: Option<Arc<crate::secrets::store::SecretsStore>>,
+    future: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = crate::Result<String>> + Send + 'static,
+{
+    spawn_worker_task_with_scan_mode(
+        worker_id,
+        event_tx,
+        agent_id,
+        channel_id,
+        secrets_store,
+        crate::secrets::scrub::SecretScanMode::Strict,
+        future,
+    )
+}
+
+/// Like `spawn_worker_task` but with an explicit secret scan mode.
+pub(crate) fn spawn_worker_task_with_scan_mode<F>(
+    worker_id: WorkerId,
+    event_tx: broadcast::Sender<ProcessEvent>,
+    agent_id: crate::AgentId,
+    channel_id: Option<ChannelId>,
+    secrets_store: Option<Arc<crate::secrets::store::SecretsStore>>,
+    scan_mode: crate::secrets::scrub::SecretScanMode,
+    future: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = crate::Result<String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+>>>>>>> theirs
         #[cfg(feature = "metrics")]
         let worker_start = std::time::Instant::now();
 
@@ -1584,6 +1658,7 @@ where
             .with_label_values(&[&*agent_id])
             .inc();
 
+<<<<<<< ours
         let worker_future = std::panic::AssertUnwindSafe(future).catch_unwind();
         tokio::pin!(worker_future);
         let raw = tokio::select! {
@@ -1593,6 +1668,28 @@ where
                 Ok(Ok(WorkerOutcome::Cancelled {
                     reason: "cancelled by supervisor".to_string(),
                 }))
+=======
+        let outcome = std::panic::AssertUnwindSafe(future).catch_unwind().await;
+        let worker_result: std::result::Result<String, WorkerCompletionError> = match outcome {
+            Ok(Ok(text)) => {
+                // Scrub tool secret values from the result before it reaches
+                // the channel. The channel never sees raw secret values.
+                let store_ref = secrets_store.as_ref().map(|s| s.as_ref());
+                let scrubbed = scan_mode.apply_scrubbing_with_store(&text, store_ref);
+                Ok(scrubbed)
+            }
+            Ok(Err(error)) => {
+                let failure = WorkerCompletionError::from_spacebot_error(error);
+                match failure {
+                    WorkerCompletionError::Cancelled { .. } => Err(failure),
+                    WorkerCompletionError::Failed { message } => {
+                        let store_ref = secrets_store.as_ref().map(|s| s.as_ref());
+                        let scrubbed =
+                            scan_mode.apply_scrubbing_with_store(&message, store_ref);
+                        Err(WorkerCompletionError::Failed { message: scrubbed })
+                    }
+                }
+>>>>>>> theirs
             }
         };
         if let Some(directory_claim) = opencode_directory_claim {

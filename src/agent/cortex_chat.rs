@@ -738,9 +738,14 @@ impl CortexChatSession {
             channel_context_id.map(std::sync::Arc::<str>::from),
             self.deps.event_tx.clone(),
         )
+<<<<<<< ours
         .with_secret_scan_mode(self.deps.runtime_config.sandbox.load().secret_scanner);
         let tool_calls = Arc::new(Mutex::new(Vec::new()));
         let hook = CortexChatHook::new(event_tx.clone(), spacebot_hook, tool_calls.clone());
+=======
+        .with_secret_scan_mode(self.deps.secret_scan_mode());
+        let hook = CortexChatHook::new(event_tx.clone(), spacebot_hook);
+>>>>>>> theirs
 
         // Clone what the spawned task needs
         let user_text = user_text.to_string();

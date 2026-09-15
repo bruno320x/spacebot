@@ -69,6 +69,7 @@ impl Branch {
             Some(channel_id.clone()),
             deps.event_tx.clone(),
         )
+<<<<<<< ours
         .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
         if let Some(contract_state) = &execution_config.memory_persistence_contract {
             hook = hook.with_memory_persistence_contract(contract_state.clone());
@@ -76,6 +77,10 @@ impl Branch {
         if let Some(delegation) = &execution_config.branch_delegation {
             hook = hook.with_branch_delegation(delegation.clone());
         }
+=======
+        .with_secret_scan_mode(deps.secret_scan_mode())
+        .with_secrets_snapshot(deps.runtime_config.secrets.load().as_ref().clone());
+>>>>>>> theirs
 
         Self {
             id,
@@ -302,6 +307,7 @@ impl Branch {
         } else {
             conclusion
         };
+<<<<<<< ours
         let conclusion = crate::secrets::scrub::scrub_leaks_with_mode(
             &conclusion,
             self.deps.runtime_config.sandbox.load().secret_scanner,
@@ -322,6 +328,9 @@ impl Branch {
         let transcript = (!transcript_steps.is_empty())
             .then(|| crate::conversation::worker_transcript::serialize_steps(&transcript_steps));
         let status = classify_branch_status(&conclusion).to_string();
+=======
+        let conclusion = self.deps.secret_scan_mode().maybe_scrub_leaks(conclusion);
+>>>>>>> theirs
 
         // Send conclusion back to the channel
         let _ = self.deps.event_tx.send(ProcessEvent::BranchResult {

@@ -19,6 +19,7 @@ pub struct SetStatusTool {
     interactive: bool,
     /// Tool secret pairs for scrubbing status text before it reaches the channel.
     tool_secret_pairs: Vec<(String, String)>,
+    secret_scan_mode: crate::secrets::scrub::SecretScanMode,
 }
 
 impl SetStatusTool {
@@ -39,12 +40,19 @@ impl SetStatusTool {
             process_run_logger,
             interactive,
             tool_secret_pairs: Vec::new(),
+            secret_scan_mode: crate::secrets::scrub::SecretScanMode::default(),
         }
     }
 
     /// Set tool secret pairs for output scrubbing.
     pub fn with_tool_secrets(mut self, pairs: Vec<(String, String)>) -> Self {
         self.tool_secret_pairs = pairs;
+        self
+    }
+
+    /// Set the secret scan mode for this tool.
+    pub fn with_secret_scan_mode(mut self, mode: crate::secrets::scrub::SecretScanMode) -> Self {
+        self.secret_scan_mode = mode;
         self
     }
 }
@@ -193,6 +201,7 @@ impl Tool for SetStatusTool {
             scrubbed.clone()
         };
 
+<<<<<<< ours
         // An outcome status is the worker's terminal result, not just a
         // progress line: the full text rides in the tool output so the
         // completion path can deliver it, while the capped form feeds the
@@ -248,6 +257,12 @@ impl Tool for SetStatusTool {
                 }
             }
         }
+=======
+        // Apply centralized scrubbing: exact-match (layer 1) + regex (layer 2) per mode.
+        let status = self
+            .secret_scan_mode
+            .apply_scrubbing_with_pairs(&status, &self.tool_secret_pairs);
+>>>>>>> theirs
 
         let event = ProcessEvent::WorkerStatus {
             agent_id: self.agent_id.clone(),

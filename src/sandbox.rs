@@ -26,6 +26,7 @@ pub struct SandboxConfig {
     pub writable_paths: Vec<PathBuf>,
     #[serde(default)]
     pub passthrough_env: Vec<String>,
+<<<<<<< ours
     /// Secret leak scan mode for this agent's output paths.
     ///
     /// `strict` (default): regex detection of unknown API-key patterns runs
@@ -40,6 +41,18 @@ pub struct SandboxConfig {
     /// Managed by `refresh_project_paths`, not user-configured.
     #[serde(skip)]
     pub project_paths: Vec<PathBuf>,
+=======
+    /// Controls how the secret leak scanner operates on tool output.
+    ///
+    /// - `strict` (default): regex-based detection for unknown API key patterns.
+    ///   Catches secrets not in the store but may false-positive on public keys
+    ///   found in scraped web content (e.g. Algolia search keys).
+    /// - `own_secrets_only`: only redact the agent's own stored secrets. Skips
+    ///   regex detection entirely — eliminates false positives from web scraping.
+    /// - `disabled`: no leak detection at all.
+    #[serde(default)]
+    pub secret_scanner: crate::secrets::scrub::SecretScanMode,
+>>>>>>> theirs
 }
 
 impl Default for SandboxConfig {
@@ -48,8 +61,12 @@ impl Default for SandboxConfig {
             mode: SandboxMode::Enabled,
             writable_paths: Vec::new(),
             passthrough_env: Vec::new(),
+<<<<<<< ours
             secret_scanner: SecretScanMode::Strict,
             project_paths: Vec::new(),
+=======
+            secret_scanner: crate::secrets::scrub::SecretScanMode::default(),
+>>>>>>> theirs
         }
     }
 }

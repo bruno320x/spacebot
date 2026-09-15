@@ -1209,7 +1209,11 @@ impl Channel {
             Some(id.clone()),
             deps.event_tx.clone(),
         )
+<<<<<<< ours
         .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
+=======
+        .with_secret_scan_mode(deps.secret_scan_mode());
+>>>>>>> theirs
         let status_block = Arc::new(RwLock::new(StatusBlock::new()));
         let history = Arc::new(RwLock::new(Vec::new()));
         let active_branches = Arc::new(RwLock::new(HashMap::new()));
@@ -1551,6 +1555,16 @@ impl Channel {
             .get(self.deps.agent_id.as_ref())
             .map(String::as_str)
             .unwrap_or(self.deps.agent_id.as_ref())
+    }
+
+    /// Check if strict-mode leak detection finds a secret in the given text.
+    /// Returns `Some(leak)` only when `SecretScanMode::Strict` and a pattern matches.
+    fn strict_mode_leak(&self, text: &str) -> Option<String> {
+        if self.deps.secret_scan_mode() == crate::secrets::scrub::SecretScanMode::Strict {
+            crate::secrets::scrub::scan_for_leaks(text)
+        } else {
+            None
+        }
     }
 
     fn current_adapter(&self) -> Option<&str> {
@@ -3938,10 +3952,14 @@ impl Channel {
                                 channel_id = %self.id,
                                 "blocked retrigger fallback output containing structured or tool syntax"
                             );
+<<<<<<< ours
                         } else if self.deps.runtime_config.sandbox.load().secret_scanner
                             == crate::secrets::scrub::SecretScanMode::Strict
                             && let Some(leak) = crate::secrets::scrub::scan_for_leaks(text)
                         {
+=======
+                        } else if let Some(leak) = self.strict_mode_leak(text) {
+>>>>>>> theirs
                             tracing::warn!(
                                 channel_id = %self.id,
                                 leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
@@ -4019,10 +4037,14 @@ impl Channel {
                                 channel_id = %self.id,
                                 "blocked retrigger output containing structured or tool syntax"
                             );
+<<<<<<< ours
                         } else if self.deps.runtime_config.sandbox.load().secret_scanner
                             == crate::secrets::scrub::SecretScanMode::Strict
                             && let Some(leak) = crate::secrets::scrub::scan_for_leaks(text)
                         {
+=======
+                        } else if let Some(leak) = self.strict_mode_leak(text) {
+>>>>>>> theirs
                             tracing::warn!(
                                 channel_id = %self.id,
                                 leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
@@ -4091,10 +4113,14 @@ impl Channel {
                             channel_id = %self.id,
                             "blocked fallback output containing structured or tool syntax"
                         );
+<<<<<<< ours
                     } else if self.deps.runtime_config.sandbox.load().secret_scanner
                         == crate::secrets::scrub::SecretScanMode::Strict
                         && let Some(leak) = crate::secrets::scrub::scan_for_leaks(text)
                     {
+=======
+                    } else if let Some(leak) = self.strict_mode_leak(text) {
+>>>>>>> theirs
                         tracing::warn!(
                             channel_id = %self.id,
                             leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],

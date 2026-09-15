@@ -334,7 +334,12 @@ impl Worker {
             channel_id.clone(),
             deps.event_tx.clone(),
         )
+<<<<<<< ours
         .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
+=======
+        .with_secret_scan_mode(deps.secret_scan_mode())
+        .with_secrets_snapshot(deps.runtime_config.secrets.load().as_ref().clone());
+>>>>>>> theirs
         let (status_tx, status_rx) = watch::channel("starting".to_string());
         let (inject_tx, inject_rx) = mpsc::channel(8);
 

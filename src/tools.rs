@@ -542,6 +542,7 @@ pub async fn add_channel_tools(
             .cloned()
             .unwrap_or_else(|| state.deps.agent_id.to_string());
         handle
+<<<<<<< ours
             .add_tool(ReplyTool::new(
                 reply_target.clone(),
                 conversation_id.clone(),
@@ -577,6 +578,26 @@ pub async fn add_channel_tools(
                 conversation_id.clone(),
                 current_adapter.as_deref() == Some("portal"),
             ))
+=======
+            .add_tool(
+                ReplyTool::new(
+                    response_tx.clone(),
+                    conversation_id.clone(),
+                    state.conversation_logger.clone(),
+                    state.channel_id.clone(),
+                    replied_flag.clone(),
+                    agent_display_name,
+                )
+                .with_secret_scan_mode(state.deps.secret_scan_mode())
+                .with_tool_secrets({
+                    let guard = state.deps.runtime_config.secrets.load();
+                    match guard.as_ref() {
+                        Some(store) => store.tool_secret_pairs(),
+                        None => Vec::new(),
+                    }
+                }),
+            )
+>>>>>>> theirs
             .await?;
     }
     handle.add_tool(BranchTool::new(state.clone())).await?;
@@ -1327,7 +1348,7 @@ pub fn create_worker_tool_server(
             if let Some(store) = runtime_config.secrets.load().as_ref() {
                 status_tool = status_tool.with_tool_secrets(store.tool_secret_pairs(&agent_id));
             }
-            status_tool
+            status_tool.with_secret_scan_mode(runtime_config.sandbox.load().secret_scanner)
         })
         .tool(ReadSkillTool::new(runtime_config.clone()));
 

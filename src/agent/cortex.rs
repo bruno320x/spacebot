@@ -2268,6 +2268,599 @@ async fn generate_profile(deps: &AgentDeps, logger: &CortexLogger) {
                     "duration_ms": duration_ms,
                     "model": model_name,
                 })),
+<<<<<<< ours
+=======
+            );
+        }
+    }
+}
+
+// -- Association loop --
+
+/// Spawn the association loop for an agent.
+///
+/// Scans memories for embedding similarity and creates association edges
+/// between related memories. On first run, backfills all existing memories.
+/// Subsequent runs only process memories created since the last pass.
+pub fn spawn_association_loop(
+    deps: AgentDeps,
+    logger: CortexLogger,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) = run_association_loop(&deps, &logger).await {
+            tracing::error!(%error, "cortex association loop exited with error");
+        }
+    })
+}
+
+/// Spawn a background loop that picks up ready tasks when idle.
+pub fn spawn_ready_task_loop(deps: AgentDeps, logger: CortexLogger) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) = run_ready_task_loop(&deps, &logger).await {
+            tracing::error!(%error, "cortex ready-task loop exited with error");
+        }
+    })
+}
+
+async fn run_ready_task_loop(deps: &AgentDeps, logger: &CortexLogger) -> anyhow::Result<()> {
+    tracing::info!("cortex ready-task loop started");
+
+    // Let startup settle before first pickup attempt.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    loop {
+        let interval = deps.runtime_config.cortex.load().tick_interval_secs;
+        tokio::time::sleep(Duration::from_secs(interval.max(5))).await;
+
+        if let Err(error) = pickup_one_ready_task(deps, logger).await {
+            tracing::warn!(%error, "ready-task pickup pass failed");
+        }
+    }
+}
+
+async fn pickup_one_ready_task(deps: &AgentDeps, logger: &CortexLogger) -> anyhow::Result<()> {
+    let Some(task) = deps.task_store.claim_next_ready(&deps.agent_id).await? else {
+        return Ok(());
+    };
+
+    logger.log(
+        "task_pickup_started",
+        &format!("Picked up ready task #{}", task.task_number),
+        Some(serde_json::json!({
+            "task_number": task.task_number,
+            "title": task.title,
+        })),
+    );
+
+    let prompt_engine = deps.runtime_config.prompts.load();
+    let sandbox_enabled = deps.sandbox.mode_enabled();
+    let sandbox_containment_active = deps.sandbox.containment_active();
+    let sandbox_read_allowlist = deps.sandbox.prompt_read_allowlist();
+    let sandbox_write_allowlist = deps.sandbox.prompt_write_allowlist();
+
+    // Collect tool secret names so the worker template can list available credentials.
+    let secrets_guard = deps.runtime_config.secrets.load();
+    let tool_secret_names = match (*secrets_guard).as_ref() {
+        Some(store) => store.tool_secret_names(),
+        None => Vec::new(),
+    };
+
+    let worker_system_prompt = prompt_engine
+        .render_worker_prompt(
+            &deps.runtime_config.instance_dir.display().to_string(),
+            &deps.runtime_config.workspace_dir.display().to_string(),
+            sandbox_enabled,
+            sandbox_containment_active,
+            sandbox_read_allowlist,
+            sandbox_write_allowlist,
+            &tool_secret_names,
+        )
+        .map_err(|error| anyhow::anyhow!("failed to render worker prompt: {error}"))?;
+
+    let mut task_prompt = format!("Execute task #{}: {}", task.task_number, task.title);
+    if let Some(description) = &task.description {
+        task_prompt.push_str("\n\nDescription:\n");
+        task_prompt.push_str(description);
+    }
+    if !task.subtasks.is_empty() {
+        task_prompt.push_str("\n\nSubtasks:\n");
+        for (index, subtask) in task.subtasks.iter().enumerate() {
+            let marker = if subtask.completed { "[x]" } else { "[ ]" };
+            task_prompt.push_str(&format!("{}. {} {}\n", index + 1, marker, subtask.title));
+        }
+    }
+
+    let screenshot_dir = deps
+        .runtime_config
+        .workspace_dir
+        .join(".spacebot")
+        .join("screenshots");
+    let logs_dir = deps
+        .runtime_config
+        .workspace_dir
+        .join(".spacebot")
+        .join("logs");
+    if let Err(error) = std::fs::create_dir_all(&screenshot_dir) {
+        tracing::warn!(%error, path = %screenshot_dir.display(), "failed to create screenshot directory");
+    }
+    if let Err(error) = std::fs::create_dir_all(&logs_dir) {
+        tracing::warn!(%error, path = %logs_dir.display(), "failed to create logs directory");
+    }
+
+    let browser_config = (**deps.runtime_config.browser_config.load()).clone();
+    let brave_search_key = (**deps.runtime_config.brave_search_key.load()).clone();
+    let worker = Worker::new(
+        None,
+        task_prompt,
+        worker_system_prompt,
+        deps.clone(),
+        browser_config,
+        screenshot_dir,
+        brave_search_key,
+        logs_dir,
+    );
+
+    let worker_id = worker.id;
+    let (detached_worker_lifecycle, mut detached_cancel_rx) = register_detached_worker_for_pickup(
+        &deps.process_control_registry,
+        deps.task_store.as_ref(),
+        &deps.agent_id,
+        task.task_number,
+        worker_id,
+    )
+    .await?;
+
+    let _ = deps.event_tx.send(ProcessEvent::TaskUpdated {
+        agent_id: deps.agent_id.clone(),
+        task_number: task.task_number,
+        status: "in_progress".to_string(),
+        action: "updated".to_string(),
+    });
+
+    let task_description = format!("task #{}: {}", task.task_number, task.title);
+
+    let _ = deps.event_tx.send(ProcessEvent::WorkerStarted {
+        agent_id: deps.agent_id.clone(),
+        worker_id,
+        channel_id: None,
+        task: task_description.clone(),
+        worker_type: "task".to_string(),
+    });
+
+    // Log to worker_runs directly — task workers have no parent channel, so the
+    // channel event handler won't persist them.
+    let run_logger = crate::conversation::history::ProcessRunLogger::new(deps.sqlite_pool.clone());
+    run_logger.log_worker_started(None, worker_id, &task_description, "task", &deps.agent_id);
+
+    let task_store = deps.task_store.clone();
+    let agent_id = deps.agent_id.to_string();
+    let event_tx = deps.event_tx.clone();
+    let logger = logger.clone();
+    let injection_tx = deps.injection_tx.clone();
+    let links = deps.links.clone();
+    let agent_names = deps.agent_names.clone();
+    let sqlite_pool = deps.sqlite_pool.clone();
+    let secrets_snapshot = deps.runtime_config.secrets.load().clone();
+    let scan_mode = deps.secret_scan_mode();
+    let process_control_registry = deps.process_control_registry.clone();
+    let runtime_config = deps.runtime_config.clone();
+    tokio::spawn(async move {
+        // Scrub known secrets and unknown leak patterns from all worker output
+        // before persisting, logging, or emitting events.
+        let scrub = |text: String| -> String {
+            let store_ref: Option<&crate::secrets::store::SecretsStore> =
+                secrets_snapshot.as_ref().as_ref().map(|s| s.as_ref());
+            scan_mode.apply_scrubbing_with_store(&text, store_ref)
+        };
+
+        let worker_execution = async {
+            let worker_future = std::panic::AssertUnwindSafe(worker.run()).catch_unwind();
+            tokio::pin!(worker_future);
+
+            let worker_result = tokio::select! {
+                biased;
+                result = &mut worker_future => {
+                    Some(result)
+                }
+                _ = &mut detached_cancel_rx => worker_future.as_mut().now_or_never(),
+            };
+
+            if let Some(worker_result) = worker_result {
+                let completion_won = claim_detached_completion(&detached_worker_lifecycle);
+                if completion_won {
+                    match worker_result {
+                        Ok(Ok(raw_result_text)) => {
+                            let result_text = scrub(raw_result_text);
+                            let db_updated = task_store
+                                .update(
+                                    &agent_id,
+                                    task.task_number,
+                                    UpdateTaskInput {
+                                        status: Some(TaskStatus::Done),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await;
+
+                            if let Err(ref error) = db_updated {
+                                tracing::warn!(
+                                    %error,
+                                    task_number = task.task_number,
+                                    "failed to mark picked-up task done"
+                                );
+                                run_logger.log_worker_completed(worker_id, &result_text, false);
+                                logger.log(
+                                    "task_pickup_completed_persist_failure",
+                                    &format!(
+                                        "Picked-up task #{} completed but could not persist done state: {error}",
+                                        task.task_number
+                                    ),
+                                    Some(serde_json::json!({
+                                        "task_number": task.task_number,
+                                        "worker_id": worker_id.to_string(),
+                                    })),
+                                );
+                                let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                                    agent_id: Arc::from(agent_id.as_str()),
+                                    worker_id,
+                                    channel_id: None,
+                                    result: result_text,
+                                    notify: true,
+                                    success: false,
+                                });
+                            } else {
+                                run_logger.log_worker_completed(worker_id, &result_text, true);
+                                let _ = event_tx.send(ProcessEvent::TaskUpdated {
+                                    agent_id: Arc::from(agent_id.as_str()),
+                                    task_number: task.task_number,
+                                    status: "done".to_string(),
+                                    action: "updated".to_string(),
+                                });
+
+                                logger.log(
+                                    "task_pickup_completed",
+                                    &format!("Completed picked-up task #{}", task.task_number),
+                                    Some(serde_json::json!({
+                                        "task_number": task.task_number,
+                                        "worker_id": worker_id.to_string(),
+                                    })),
+                                );
+
+                                notify_delegation_completion(
+                                    &task,
+                                    &result_text,
+                                    true,
+                                    &agent_id,
+                                    &links,
+                                    &agent_names,
+                                    &sqlite_pool,
+                                    &injection_tx,
+                                )
+                                .await;
+
+                                let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                                    agent_id: Arc::from(agent_id.as_str()),
+                                    worker_id,
+                                    channel_id: None,
+                                    result: result_text,
+                                    notify: true,
+                                    success: true,
+                                });
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            let scrubbed_error = scrub(error.to_string());
+                            let (error_message, _notify, _success) = map_worker_completion_result(
+                                Err(WorkerCompletionError::failed(scrubbed_error.clone())),
+                            );
+                            let worker_complete_message = format!("Worker failed: {error}");
+                            run_logger.log_worker_completed(worker_id, &error_message, false);
+                            let requeue_result = task_store
+                                .update(
+                                    &agent_id,
+                                    task.task_number,
+                                    UpdateTaskInput {
+                                        status: Some(TaskStatus::Ready),
+                                        clear_worker_id: true,
+                                        ..Default::default()
+                                    },
+                                )
+                                .await;
+
+                            if let Err(ref update_error) = requeue_result {
+                                tracing::warn!(
+                                    %update_error,
+                                    task_number = task.task_number,
+                                    "failed to return task to ready after failure"
+                                );
+                                logger.log(
+                                    "task_pickup_failed_to_persist",
+                                    &format!(
+                                        "Picked-up task #{} failed but could not persist failure state: {error}",
+                                        task.task_number
+                                    ),
+                                    Some(serde_json::json!({
+                                        "task_number": task.task_number,
+                                        "worker_id": worker_id.to_string(),
+                                        "error": error.to_string(),
+                                    })),
+                                );
+                            } else {
+                                let _ = event_tx.send(ProcessEvent::TaskUpdated {
+                                    agent_id: Arc::from(agent_id.as_str()),
+                                    task_number: task.task_number,
+                                    status: "ready".to_string(),
+                                    action: "updated".to_string(),
+                                });
+
+                                logger.log(
+                                    "task_pickup_failed",
+                                    &format!(
+                                        "Picked-up task #{} failed: {error}",
+                                        task.task_number
+                                    ),
+                                    Some(serde_json::json!({
+                                        "task_number": task.task_number,
+                                        "worker_id": worker_id.to_string(),
+                                        "error": error.to_string(),
+                                    })),
+                                );
+
+                                notify_delegation_completion(
+                                    &task,
+                                    &error_message,
+                                    false,
+                                    &agent_id,
+                                    &links,
+                                    &agent_names,
+                                    &sqlite_pool,
+                                    &injection_tx,
+                                )
+                                .await;
+                            }
+
+                            let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                                agent_id: Arc::from(agent_id.as_str()),
+                                worker_id,
+                                channel_id: None,
+                                result: worker_complete_message,
+                                notify: true,
+                                success: false,
+                            });
+                        }
+                        Err(panic_payload) => {
+                            let scrubbed_panic =
+                                scrub(crate::agent::panic_payload_to_string(&*panic_payload));
+                            let (error_message, _notify, _success) =
+                                map_worker_completion_result(Err(WorkerCompletionError::failed(
+                                    format!("worker task panicked: {scrubbed_panic}"),
+                                )));
+                            run_logger.log_worker_completed(worker_id, &error_message, false);
+                            let requeue_result = task_store
+                                .update(
+                                    &agent_id,
+                                    task.task_number,
+                                    UpdateTaskInput {
+                                        status: Some(TaskStatus::Ready),
+                                        clear_worker_id: true,
+                                        ..Default::default()
+                                    },
+                                )
+                                .await;
+
+                            if let Err(ref update_error) = requeue_result {
+                                tracing::warn!(
+                                    %update_error,
+                                    task_number = task.task_number,
+                                    "failed to return task to ready after panic"
+                                );
+                                logger.log(
+                                    "task_pickup_panic_persist_failure",
+                                    &format!(
+                                        "Picked-up task #{} panicked and could not persist failure state: {error_message}",
+                                        task.task_number
+                                    ),
+                                    Some(serde_json::json!({
+                                        "task_number": task.task_number,
+                                        "worker_id": worker_id.to_string(),
+                                    })),
+                                );
+                            } else {
+                                let _ = event_tx.send(ProcessEvent::TaskUpdated {
+                                    agent_id: Arc::from(agent_id.as_str()),
+                                    task_number: task.task_number,
+                                    status: "ready".to_string(),
+                                    action: "updated".to_string(),
+                                });
+
+                                notify_delegation_completion(
+                                    &task,
+                                    &error_message,
+                                    false,
+                                    &agent_id,
+                                    &links,
+                                    &agent_names,
+                                    &sqlite_pool,
+                                    &injection_tx,
+                                )
+                                .await;
+                            }
+
+                            let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                                agent_id: Arc::from(agent_id.as_str()),
+                                worker_id,
+                                channel_id: None,
+                                result: error_message,
+                                notify: true,
+                                success: false,
+                            });
+                        }
+                    }
+
+                    let _ = detached_worker_lifecycle.compare_exchange(
+                        crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_COMPLETING,
+                        crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_TERMINAL,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    return;
+                }
+            }
+
+            if detached_worker_lifecycle
+                .compare_exchange(
+                    crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_KILLING,
+                    crate::agent::process_control::DETACHED_WORKER_LIFECYCLE_TERMINAL,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                let timeout_retry_limit = runtime_config
+                    .cortex
+                    .load()
+                    .detached_worker_timeout_retry_limit;
+                let (next_timeout_count, exhausted, next_status) =
+                    detached_timeout_transition(&task.metadata, timeout_retry_limit);
+
+                let timeout_message = scrub(format!(
+                    "Worker cancelled by supervisor timeout (attempt {} of {}).",
+                    next_timeout_count, timeout_retry_limit
+                ));
+                let update_result = task_store
+                    .update(
+                        &agent_id,
+                        task.task_number,
+                        UpdateTaskInput {
+                            status: Some(next_status),
+                            clear_worker_id: true,
+                            metadata: Some(serde_json::json!({
+                                "supervisor_timeout_count": next_timeout_count,
+                                "supervisor_timeout_exhausted": exhausted,
+                            })),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+
+                match update_result {
+                    Ok(Some(_)) => {
+                        run_logger.log_worker_completed(worker_id, &timeout_message, false);
+                        let _ = event_tx.send(ProcessEvent::TaskUpdated {
+                            agent_id: Arc::from(agent_id.as_str()),
+                            task_number: task.task_number,
+                            status: next_status.as_str().to_string(),
+                            action: "updated".to_string(),
+                        });
+                        logger.log(
+                            "task_pickup_timeout",
+                            &format!(
+                                "Detached worker timeout for task #{} (count: {}, exhausted: {})",
+                                task.task_number, next_timeout_count, exhausted
+                            ),
+                            Some(serde_json::json!({
+                                "task_number": task.task_number,
+                                "worker_id": worker_id.to_string(),
+                                "supervisor_timeout_count": next_timeout_count,
+                                "supervisor_timeout_exhausted": exhausted,
+                                "retry_limit": timeout_retry_limit,
+                            })),
+                        );
+
+                        notify_delegation_completion(
+                            &task,
+                            &timeout_message,
+                            false,
+                            &agent_id,
+                            &links,
+                            &agent_names,
+                            &sqlite_pool,
+                            &injection_tx,
+                        )
+                        .await;
+
+                        let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                            agent_id: Arc::from(agent_id.as_str()),
+                            worker_id,
+                            channel_id: None,
+                            result: timeout_message,
+                            notify: true,
+                            success: false,
+                        });
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            task_number = task.task_number,
+                            "failed to update task status after detached timeout cancellation: task missing"
+                        );
+                        run_logger.log_worker_completed(worker_id, &timeout_message, false);
+                        logger.log(
+                                "task_pickup_timeout_persist_failure",
+                                &format!(
+                                    "Detached worker timeout for task #{} but task update returned no row",
+                                    task.task_number
+                                ),
+                                Some(serde_json::json!({
+                                    "task_number": task.task_number,
+                                    "worker_id": worker_id.to_string(),
+                                    "supervisor_timeout_count": next_timeout_count,
+                                    "supervisor_timeout_exhausted": exhausted,
+                                    "retry_limit": timeout_retry_limit,
+                                })),
+                            );
+                        let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                            agent_id: Arc::from(agent_id.as_str()),
+                            worker_id,
+                            channel_id: None,
+                            result: timeout_message.clone(),
+                            notify: true,
+                            success: false,
+                        });
+                    }
+                    Err(update_error) => {
+                        tracing::warn!(
+                            %update_error,
+                            task_number = task.task_number,
+                            "failed to update task status after detached timeout cancellation"
+                        );
+                        run_logger.log_worker_completed(worker_id, &timeout_message, false);
+                        logger.log(
+                            "task_pickup_timeout_persist_failure",
+                            &format!(
+                                "Detached worker timeout for task #{} but failed to persist status",
+                                task.task_number
+                            ),
+                            Some(serde_json::json!({
+                                "task_number": task.task_number,
+                                "worker_id": worker_id.to_string(),
+                                "supervisor_timeout_count": next_timeout_count,
+                                "supervisor_timeout_exhausted": exhausted,
+                                "retry_limit": timeout_retry_limit,
+                            })),
+                        );
+                        let _ = event_tx.send(ProcessEvent::WorkerComplete {
+                            agent_id: Arc::from(agent_id.as_str()),
+                            worker_id,
+                            channel_id: None,
+                            result: timeout_message.clone(),
+                            notify: true,
+                            success: false,
+                        });
+                    }
+                }
+            }
+        };
+
+        let execution_result = std::panic::AssertUnwindSafe(worker_execution)
+            .catch_unwind()
+            .await;
+        if let Err(panic_payload) = execution_result {
+            let panic_message = crate::agent::panic_payload_to_string(&*panic_payload);
+            tracing::warn!(
+                task_number = task.task_number,
+                %panic_message,
+                "detached worker pickup handling panicked; forcing terminal cleanup"
+>>>>>>> theirs
             );
         }
     }

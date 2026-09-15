@@ -41,6 +41,7 @@ pub struct OpenCodeWorker {
     pub model: Option<String>,
     /// Secrets store for exact-match scrubbing of tool secret values in SSE output.
     pub secrets_store: Option<Arc<SecretsStore>>,
+<<<<<<< ours
     /// Secret scan mode for the regex leak-detection layer (Layer 2).
     /// Mirrors the agent's `[agents.sandbox] secret_scanner` config; exact
     /// stored-secret scrubbing always runs regardless of this mode.
@@ -86,6 +87,10 @@ impl EventState {
             accumulated_parts: Vec::new(),
         }
     }
+=======
+    /// Controls whether regex-based leak detection runs on worker output.
+    pub secret_scan_mode: crate::secrets::scrub::SecretScanMode,
+>>>>>>> theirs
 }
 
 /// Result of an OpenCode worker run.
@@ -120,11 +125,15 @@ impl OpenCodeWorker {
             system_prompt: None,
             model: None,
             secrets_store: None,
+<<<<<<< ours
             secret_scan_mode: SecretScanMode::Strict,
             sqlite_pool: None,
             resuming_session: None,
             transcript_snapshot: crate::agent::worker::new_worker_transcript_snapshot(),
             cancellation_session: Arc::new(Mutex::new(None)),
+=======
+            secret_scan_mode: crate::secrets::scrub::SecretScanMode::default(),
+>>>>>>> theirs
         }
     }
 
@@ -161,12 +170,18 @@ impl OpenCodeWorker {
         self
     }
 
+<<<<<<< ours
     /// Set the secret leak scan mode for this worker's egress scrubbing.
     pub fn with_secret_scan_mode(mut self, mode: SecretScanMode) -> Self {
+=======
+    /// Set the secret scan mode for this worker.
+    pub fn with_secret_scan_mode(mut self, mode: crate::secrets::scrub::SecretScanMode) -> Self {
+>>>>>>> theirs
         self.secret_scan_mode = mode;
         self
     }
 
+<<<<<<< ours
     /// Set the SQLite pool for incremental transcript persistence.
     pub fn with_sqlite_pool(mut self, pool: sqlx::SqlitePool) -> Self {
         self.sqlite_pool = Some(pool);
@@ -270,6 +285,8 @@ impl OpenCodeWorker {
         Some((worker, input_tx))
     }
 
+=======
+>>>>>>> theirs
     /// Scrub tool secret values from text, replacing each with `[REDACTED:<name>]`.
     /// Returns the scrubbed text. If no secrets store is set, returns the input unchanged.
     fn scrub_text(&self, text: &str) -> String {
@@ -697,6 +714,7 @@ impl OpenCodeWorker {
 
                         // Exact-match scrubbing for leak detection
                         let scrubbed = self.scrub_text(text);
+<<<<<<< ours
                         if let Some(leak) = crate::secrets::scrub::scan_for_leaks_with_mode(
                             &scrubbed,
                             self.secret_scan_mode,
@@ -706,6 +724,17 @@ impl OpenCodeWorker {
                                 leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                 "potential secret detected in OpenCode worker output"
                             );
+=======
+
+                        if self.secret_scan_mode == crate::secrets::scrub::SecretScanMode::Strict {
+                            if let Some(leak) = crate::secrets::scrub::scan_for_leaks(&scrubbed) {
+                                tracing::warn!(
+                                    worker_id = %self.id,
+                                    leak_prefix = %&leak[..leak.len().min(8)],
+                                    "potential secret detected in OpenCode worker output"
+                                );
+                            }
+>>>>>>> theirs
                         }
 
                         state.last_text = scrubbed;
@@ -730,6 +759,7 @@ impl OpenCodeWorker {
                                         .unwrap_or_else(|| tool_name.clone());
                                     self.send_status(&format!("running: {label}"));
                                 }
+<<<<<<< ours
                                 ToolState::Completed { output, title, .. } => {
                                     // Scrub and log potential secret-pattern hits
                                     if let Some(output) = output {
@@ -746,6 +776,27 @@ impl OpenCodeWorker {
                                                 leak_prefix = %&leak[..leak.floor_char_boundary(leak.len().min(8))],
                                                 "potential secret detected in OpenCode tool output"
                                             );
+=======
+                                ToolState::Completed { output, .. } => {
+                                    // Scrub and log potential secret-pattern hits in tool output.
+                                    // Do not terminate the worker; channel egress guards enforce
+                                    // user-visible leak blocking.
+                                    if let Some(tool_output) = output {
+                                        let scrubbed = self.scrub_text(tool_output);
+                                        if self.secret_scan_mode
+                                            == crate::secrets::scrub::SecretScanMode::Strict
+                                        {
+                                            if let Some(leak) =
+                                                crate::secrets::scrub::scan_for_leaks(&scrubbed)
+                                            {
+                                                tracing::warn!(
+                                                    worker_id = %self.id,
+                                                    tool = %tool_name,
+                                                    leak_prefix = %&leak[..leak.len().min(8)],
+                                                    "potential secret detected in OpenCode tool output"
+                                                );
+                                            }
+>>>>>>> theirs
                                         }
                                     }
 

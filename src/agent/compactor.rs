@@ -333,7 +333,11 @@ async fn run_compaction(
         Some(channel_id.clone()),
         deps.event_tx.clone(),
     )
+<<<<<<< ours
     .with_secret_scan_mode(deps.runtime_config.sandbox.load().secret_scanner);
+=======
+    .with_secret_scan_mode(deps.secret_scan_mode());
+>>>>>>> theirs
 
     let mut compaction_history = Vec::new();
     let response = hook
