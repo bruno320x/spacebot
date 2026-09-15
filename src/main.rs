@@ -37,6 +37,7 @@ impl ActiveChannelKey {
     }
 }
 
+<<<<<<< ours
 /// Maximum number of deferred messages per channel before oldest are dropped.
 const DEFERRED_INJECTION_CAP: usize = 64;
 
@@ -53,6 +54,35 @@ fn queue_deferred_injection(
         queue.remove(0);
     }
     queue.push(injection.message);
+=======
+#[derive(Subcommand)]
+enum Command {
+    /// Start the daemon (default when no subcommand is given)
+    Start {
+        /// Run in the foreground instead of daemonizing
+        #[arg(short, long)]
+        foreground: bool,
+        /// Internal flag used by detached background child processes.
+        #[arg(long, hide = true)]
+        daemon_child: bool,
+    },
+    /// Stop the running daemon
+    Stop,
+    /// Restart the daemon (stop + start)
+    Restart {
+        /// Run in the foreground instead of daemonizing
+        #[arg(short, long)]
+        foreground: bool,
+    },
+    /// Show status of the running daemon
+    Status,
+    /// Manage skills
+    #[command(subcommand)]
+    Skill(SkillCommand),
+    /// Manage authentication
+    #[command(subcommand)]
+    Auth(AuthCommand),
+>>>>>>> theirs
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -276,9 +306,13 @@ fn main() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("failed to install rustls crypto provider"))?;
 
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or(Command::Start { foreground: false });
+    let command = cli.command.unwrap_or(Command::Start {
+        foreground: false,
+        daemon_child: false,
+    });
 
     match command {
+<<<<<<< ours
         Command::Start { foreground } => {
             let restart_spec = spacebot::lifecycle::RestartSpec::capture(
                 cli.config.as_deref(),
@@ -286,6 +320,16 @@ fn main() -> anyhow::Result<()> {
                 foreground,
             );
             cmd_start(cli.config, cli.debug, foreground, restart_spec)
+=======
+        Command::Start {
+            foreground,
+            daemon_child,
+        } => cmd_start(cli.config, cli.debug, foreground, daemon_child),
+        Command::Stop => cmd_stop(),
+        Command::Restart { foreground } => {
+            cmd_stop_if_running();
+            cmd_start(cli.config, cli.debug, foreground, false)
+>>>>>>> theirs
         }
         Command::Stop => cmd_stop(),
         Command::Restart { foreground } => cmd_restart(cli.config, cli.debug, foreground),
@@ -306,7 +350,11 @@ fn cmd_start(
     config_path: Option<std::path::PathBuf>,
     debug: bool,
     foreground: bool,
+<<<<<<< ours
     restart_spec: spacebot::lifecycle::RestartSpec,
+=======
+    daemon_child: bool,
+>>>>>>> theirs
 ) -> anyhow::Result<()> {
     // Use the config path (if provided) to derive the correct instance dir
     // for the PID check, so it matches the PID file written during daemonize.
@@ -319,10 +367,16 @@ fn cmd_start(
         std::process::exit(1);
     }
 
+<<<<<<< ours
     // Run onboarding interactively before daemonizing. Skipped after a
     // self-restart re-exec: stdin is /dev/null there, so the wizard could
     // never complete — fall through to setup mode instead.
     let resolved_config_path = if config_path.is_some() {
+=======
+    // Run onboarding interactively before daemonizing. Background child
+    // processes skip this because the parent already handled it.
+    let resolved_config_path = if daemon_child || config_path.is_some() {
+>>>>>>> theirs
         config_path.clone()
     } else if std::env::var_os("SPACEBOT_REEXEC").is_none()
         && spacebot::config::Config::needs_onboarding()
@@ -333,6 +387,7 @@ fn cmd_start(
         None
     };
 
+<<<<<<< ours
     if !foreground {
         // Fork BEFORE touching the macOS Keychain or any CoreFoundation API.
         //
@@ -347,6 +402,24 @@ fn cmd_start(
         // Tokio's I/O driver and thread pool also don't survive fork, so the
         // runtime and tracing init must happen after this call as well.
         spacebot::daemon::daemonize(&paths)?;
+=======
+    // Validate config loads successfully before forking
+    let config = load_config(&resolved_config_path)?;
+
+    if !foreground && !daemon_child {
+        // Fork the process before creating any Tokio runtime. After daemonize()
+        // returns, we are in the child process — the parent has exited. Any
+        // runtime created before this point would be in a broken state inside
+        // the child (Tokio's I/O driver and thread pool don't survive fork),
+        // which is why tracing init (and the OTLP batch exporter it creates)
+        // must happen *after* this call.
+        let paths = spacebot::daemon::DaemonPaths::new(&config.instance_dir);
+        let daemon_options = spacebot::daemon::DaemonStartOptions {
+            config_path: resolved_config_path.clone(),
+            debug,
+        };
+        spacebot::daemon::daemonize(&paths, &daemon_options)?;
+>>>>>>> theirs
     }
 
     // Open the instance-level secrets store so `secret:` references in config.toml

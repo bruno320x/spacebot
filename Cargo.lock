@@ -8638,7 +8638,12 @@ dependencies = [
  "utoipa-axum",
  "utoipa-swagger-ui",
  "uuid",
+<<<<<<< ours
  "zip 2.4.2",
+=======
+ "windows-sys 0.59.0",
+ "zip",
+>>>>>>> theirs
 ]
 
 [[package]]
