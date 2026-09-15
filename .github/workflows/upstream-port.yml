@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: upstream-port-engine
+  group: upstream-port-engine-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -53,10 +53,6 @@ jobs:
             echo "::error::PORT_RESULT must use port/ or diagnostics/"
             exit 1
           }
-
-          printf '%s\n' "$PORT_PR" > /tmp/port-pr
-          printf '%s\n' "$PORT_TARGET" > /tmp/port-target
-          printf '%s\n' "$PORT_RESULT" > /tmp/port-result
 
           if [ -n "$PORT_RESOLUTION" ]; then
             test -f "$PORT_RESOLUTION" || {
@@ -148,9 +144,6 @@ jobs:
               echo
               echo "This branch is diagnostic only and must not be merged while markers remain."
             } > "docs/integration-conflicts/pr-${PR}.md"
-
-            # Stage the conflicted worktree as a diagnostic snapshot. Staging
-            # records the marker-containing files but does not make them safe.
             git add -A
             git commit -m "diagnostics: capture conflicts for upstream #${PR}"
           else
