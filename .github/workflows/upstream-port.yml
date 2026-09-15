@@ -113,7 +113,9 @@ jobs:
           set -e
 
           if [ -x /tmp/resolve.sh ]; then
-            PORT_PR="$PR" PORT_TARGET="$TARGET" UPSTREAM_BASE_SHA="$BASE_SHA" UPSTREAM_HEAD_SHA="$HEAD_SHA" /tmp/resolve.sh
+            echo "resolver_sha256=$(sha256sum /tmp/resolve.sh | awk '{print $1}')"
+            grep -n -E '(^|[[:space:]])cp[[:space:]]' /tmp/resolve.sh || true
+            PORT_PR="$PR" PORT_TARGET="$TARGET" UPSTREAM_BASE_SHA="$BASE_SHA" UPSTREAM_HEAD_SHA="$HEAD_SHA" bash -x /tmp/resolve.sh
           fi
 
           UNMERGED=$(git diff --name-only --diff-filter=U || true)
