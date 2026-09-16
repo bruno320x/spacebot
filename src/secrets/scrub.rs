@@ -54,10 +54,11 @@ static HEX_SEGMENT: LazyLock<Regex> =
 /// secrets (always on — see `StreamScrubber`/`scrub_secrets`); Layer 2 is
 /// regex detection of *unknown* API-key patterns (`scan_for_leaks` /
 /// `scrub_leaks`). This mode toggles Layer 2 only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScanMode {
     /// Regex layer active everywhere (default — today's behavior).
+    #[default]
     Strict,
     /// Regex layer skipped on egress/user-visible paths; only exact stored
     /// secrets are scrubbed. Recommended when agents scrape public pages
@@ -65,12 +66,6 @@ pub enum SecretScanMode {
     OwnSecretsOnly,
     /// No scanning at all; content passes through unchanged.
     Disabled,
-}
-
-impl Default for SecretScanMode {
-    fn default() -> Self {
-        Self::Strict
-    }
 }
 
 /// Regex-layer scan respecting the agent's configured scan mode.
