@@ -57,7 +57,7 @@ jobs:
             set -e
 
             UNMERGED=$(git diff --name-only --diff-filter=U || true)
-            MARKERS=$(git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' || true)
+            MARKERS=$(git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- ':!docs/integration-conflicts/**' || true)
             if [ -n "$UNMERGED" ] || [ -n "$MARKERS" ] || [ "$APPLY_STATUS" -ne 0 ]; then
               CLEAN=false
               mkdir -p docs/integration-conflicts
