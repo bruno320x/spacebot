@@ -21,7 +21,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  RUSTFLAGS: "-Dwarnings"
+  # Append to RUSTFLAGS rather than replace: setting RUSTFLAGS at all discards
+  # .cargo/config.toml's target rustflags, so the lld flag must live here too.
+  RUSTFLAGS: "-Dwarnings -C link-arg=-fuse-ld=lld"
 
 jobs:
   rust-gate:
@@ -34,7 +36,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev lld
 
       - uses: dtolnay/rust-toolchain@stable
         with:
