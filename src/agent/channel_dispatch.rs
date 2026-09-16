@@ -894,6 +894,7 @@ async fn append_worker_memory_context(
 /// `required_skills` differ from `suggested_skills`: their full content is
 /// injected into the worker's system prompt rather than flagged in the
 /// index, so the worker cannot skip them.
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_worker_from_state(
     state: &ChannelState,
     task: impl Into<String>,

@@ -912,7 +912,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List worker runs for an agent, with live status merged from StatusBlocks. */
+        /** List worker runs for an agent, with live state merged from the process control registry. */
         get: operations["list_workers"];
         put?: never;
         post?: never;
@@ -5694,7 +5694,7 @@ export interface components {
             id: string;
             /** @description Whether this worker accepts follow-up input via route. */
             interactive: boolean;
-            /** @description Live status text from StatusBlock (running workers only). */
+            /** @description Live status text from the process control registry. */
             live_status?: string | null;
             /**
              * Format: int32
@@ -5716,7 +5716,7 @@ export interface components {
             task: string;
             /**
              * Format: int64
-             * @description Total tool calls. From DB for completed workers, from StatusBlock for running.
+             * @description Total tool calls. From DB for completed workers, from the registry for live workers.
              */
             tool_calls: number;
             worker_type: string;
