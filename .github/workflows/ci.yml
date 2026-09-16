@@ -68,7 +68,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+        # Any job that compiles Rust needs lld: RUSTFLAGS is set workflow-wide.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev lld
 
       - uses: dtolnay/rust-toolchain@stable
         with:
