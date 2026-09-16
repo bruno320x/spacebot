@@ -118,6 +118,10 @@ jobs:
 
   docker-build:
     name: Docker build smoke test
+    # The image never copies .cargo/ and only builds the release binary, so this
+    # job does not exercise the test-binary link path at all. Keep it for main
+    # and manual runs instead of gating every PR on a 45 minute image build.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -149,4 +153,10 @@ jobs:
           test "${{ needs.rust-gate.result }}" = "success"
           test "${{ needs.typegen.result }}" = "success"
           test "${{ needs.interface.result }}" = "success"
-          test "${{ needs.docker-build.result }}" = "success"
+          case "${{ needs.docker-build.result }}" in
+            success|skipped) ;;
+            *)
+              echo "docker-build: ${{ needs.docker-build.result }}"
+              exit 1
+              ;;
+          esac
