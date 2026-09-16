@@ -1,0 +1,128 @@
+name: Diagnose Rust Gate
+
+on:
+  push:
+    branches:
+      - ci/diagnose-rust-gate
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: /tmp/spacebot-test-embedding-cache
+          key: fastembed-onnx-v1
+
+      - name: Preflight
+        id: preflight
+        continue-on-error: true
+        run: ./scripts/preflight.sh --ci
+
+      - name: Formatting
+        id: fmt
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        id: check
+        continue-on-error: true
+        run: cargo check --all-targets
+
+      - name: Clippy
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --all-targets
+
+      - name: Library tests
+        id: lib_tests
+        continue-on-error: true
+        run: cargo test --lib
+
+      - name: Integration tests compile
+        id: integration_compile
+        continue-on-error: true
+        run: cargo test --tests --no-run
+
+      - name: Original full gate with trace
+        id: original_gate
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          bash -x ./scripts/gate-pr.sh --ci > /tmp/gate-pr-trace.log 2>&1
+          rc=$?
+          set -e
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          tail -n 200 /tmp/gate-pr-trace.log
+          exit "$rc"
+
+      - name: Upload gate trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-pr-trace
+          path: /tmp/gate-pr-trace.log
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Diagnostic summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Rust gate baseline diagnostics
+
+          | Step | Outcome |
+          |---|---|
+          | preflight | ${{ steps.preflight.outcome }} |
+          | cargo fmt | ${{ steps.fmt.outcome }} |
+          | cargo check | ${{ steps.check.outcome }} |
+          | clippy | ${{ steps.clippy.outcome }} |
+          | cargo test --lib | ${{ steps.lib_tests.outcome }} |
+          | cargo test --tests --no-run | ${{ steps.integration_compile.outcome }} |
+          | original gate-pr.sh | ${{ steps.original_gate.outcome }} |
+          | original gate exit code | ${{ steps.original_gate.outputs.exit_code }} |
+          EOF
+
+      - name: Fail if any baseline gate failed
+        if: always()
+        run: |
+          failed=0
+          for result in \
+            '${{ steps.preflight.outcome }}' \
+            '${{ steps.fmt.outcome }}' \
+            '${{ steps.check.outcome }}' \
+            '${{ steps.clippy.outcome }}' \
+            '${{ steps.lib_tests.outcome }}' \
+            '${{ steps.integration_compile.outcome }}' \
+            '${{ steps.original_gate.outcome }}'; do
+            if [ "$result" != success ]; then
+              failed=1
+            fi
+          done
+          exit "$failed"
