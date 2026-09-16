@@ -3285,12 +3285,20 @@ fn sanitize_tool_arguments(value: &mut serde_json::Value) -> bool {
             *text = cleaned.to_string();
             true
         }
-        serde_json::Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
-            sanitize_tool_arguments(item) || changed
-        }),
-        serde_json::Value::Object(fields) => fields.values_mut().fold(false, |changed, field| {
-            sanitize_tool_arguments(field) || changed
-        }),
+        serde_json::Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= sanitize_tool_arguments(item);
+            }
+            changed
+        }
+        serde_json::Value::Object(fields) => {
+            let mut changed = false;
+            for field in fields.values_mut() {
+                changed |= sanitize_tool_arguments(field);
+            }
+            changed
+        }
         _ => false,
     }
 }

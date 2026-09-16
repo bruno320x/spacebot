@@ -1191,10 +1191,10 @@ impl Tool for DetachedSpawnWorkerTool {
             .detached_workers
             .write()
             .await
-            .insert(worker_id.clone(), worker_control);
+            .insert(worker_id, worker_control);
         {
             let registry = self.deps.detached_workers.clone();
-            let cleanup_worker_id = worker_id.clone();
+            let cleanup_worker_id = worker_id;
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
