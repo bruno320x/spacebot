@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config libssl-dev lld
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -132,6 +132,12 @@ jobs:
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
+
+      - name: Install lld
+        # .cargo/config.toml enables -fuse-ld=lld for x86_64-unknown-linux-gnu,
+        # so the Linux release build needs the linker installed.
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y lld
 
       - uses: Swatinem/rust-cache@v2
         with:

@@ -40,6 +40,11 @@ Every PR must pass `just gate-pr` before merge. This mirrors CI and checks:
 
 Use `just gate-pr --fast` to skip clippy and integration compile during iteration.
 
+In CI the gate additionally sets `CARGO_PROFILE_TEST_DEBUG=line-tables-only`. Hosted runners
+run out of resources while linking test binaries built with full DWARF and kill the link with
+`SIGTERM` (exit 143), so the CI build emits line tables instead of full debug info. Local runs
+are unaffected and still get full debug info.
+
 The frontend CI (`interface-ci.yml`) runs `bun ci` and `bunx tsc --noEmit` on interface changes.
 
 ---

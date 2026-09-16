@@ -716,6 +716,9 @@ pub async fn build_project_context(
 /// `required_skills` differ from `suggested_skills`: their full content is
 /// injected into the worker's system prompt rather than flagged in the
 /// index, so the worker cannot skip them.
+// The dispatch boundary intentionally carries the complete worker launch contract.
+// #653 will replace this channel-owned path with an agent-owned registry.
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_worker_from_state(
     state: &ChannelState,
     task: impl Into<String>,
@@ -761,6 +764,7 @@ pub async fn spawn_worker_from_state(
 
 /// Inner implementation of worker spawning, separated so the caller can
 /// handle task reservation cleanup in a single place.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_worker_inner(
     state: &ChannelState,
     task: &str,

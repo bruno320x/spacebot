@@ -168,6 +168,9 @@ cd "$repository_root"
 
 if $is_ci; then
 	log "CI mode enabled"
+	# Hosted runners kill the link step with SIGTERM (exit 143) when emitting full DWARF
+	# for every test binary. Line tables keep stack traces readable at a fraction of the cost.
+	export CARGO_PROFILE_TEST_DEBUG=line-tables-only
 fi
 
 check_migration_safety
