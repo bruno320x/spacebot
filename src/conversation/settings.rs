@@ -263,7 +263,7 @@ impl ConversationSettings {
     /// passing this as `agent_default` to `resolve()` never clobbers
     /// binding/conversation-level overrides that are set.
     pub fn from_agent_channel_config(channel: &crate::config::ChannelConfig) -> Self {
-        let response_mode = channel.response_mode.or_else(|| {
+        let response_mode = channel.response_mode.or({
             if channel.listen_only_mode {
                 Some(ResponseMode::Observe)
             } else {

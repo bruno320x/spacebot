@@ -936,6 +936,7 @@ pub async fn spawn_worker_from_state(
 
 /// Inner implementation of worker spawning, separated so the caller can
 /// handle task reservation cleanup in a single place.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_worker_inner(
     state: &ChannelState,
     task: &str,
