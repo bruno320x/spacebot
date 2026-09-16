@@ -8,6 +8,9 @@
 //! the same session.
 
 use crate::acp::types::*;
+use crate::agent::process_control::{
+    WorkerCallbackContext, WorkerFollowUp, WorkerOperationContext, WorkerResultTarget,
+};
 use crate::agent::worker::WorkerTranscriptSnapshot;
 use crate::config::AcpPermissionMode;
 use crate::secrets::scrub::SecretScanMode;
@@ -21,7 +24,6 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{broadcast, mpsc};
-use uuid::Uuid;
 
 /// Result of an ACP worker run.
 pub struct AcpWorkerResult {
@@ -41,7 +43,7 @@ pub struct AcpWorker {
     pub prompt_timeout: Duration,
     pub event_tx: broadcast::Sender<ProcessEvent>,
     /// Input channel for interactive follow-ups.
-    pub input_rx: Option<mpsc::Receiver<String>>,
+    pub input_rx: Option<mpsc::Receiver<WorkerFollowUp>>,
     /// System prompt prepended to each prompt turn.
     pub system_prompt: Option<String>,
     /// Secrets store for exact-match scrubbing of tool secret values.
@@ -55,6 +57,9 @@ pub struct AcpWorker {
     /// the stdio driver is mid-wait. Ownership of the `Child` stays here.
     pub child_registry: Option<Arc<crate::supervisor::ChildRegistry>>,
     pub transcript_snapshot: WorkerTranscriptSnapshot,
+    pub callback: WorkerCallbackContext,
+    pub initial_operation: Option<WorkerOperationContext>,
+    pub process_control_registry: Arc<crate::agent::process_control::ProcessControlRegistry>,
     /// Owned subprocess; killed on drop so a cancelled worker never orphans
     /// the agent process.
     child: Option<Child>,
@@ -64,6 +69,9 @@ impl AcpWorker {
     /// Create a new ACP worker.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        id: WorkerId,
+        callback: WorkerCallbackContext,
+        initial_operation: WorkerOperationContext,
         channel_id: Option<ChannelId>,
         agent_id: AgentId,
         task: impl Into<String>,
@@ -73,9 +81,10 @@ impl AcpWorker {
         permission_mode: AcpPermissionMode,
         prompt_timeout: Duration,
         event_tx: broadcast::Sender<ProcessEvent>,
+        process_control_registry: Arc<crate::agent::process_control::ProcessControlRegistry>,
     ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             channel_id,
             agent_id,
             task: task.into(),
@@ -91,6 +100,9 @@ impl AcpWorker {
             secret_scan_mode: SecretScanMode::Strict,
             child_registry: None,
             transcript_snapshot: crate::agent::worker::new_worker_transcript_snapshot(),
+            callback,
+            initial_operation: Some(initial_operation),
+            process_control_registry,
             child: None,
         }
     }
@@ -105,6 +117,9 @@ impl AcpWorker {
     /// Create a new interactive ACP worker.
     #[allow(clippy::too_many_arguments)]
     pub fn new_interactive(
+        id: WorkerId,
+        callback: WorkerCallbackContext,
+        initial_operation: WorkerOperationContext,
         channel_id: Option<ChannelId>,
         agent_id: AgentId,
         task: impl Into<String>,
@@ -114,9 +129,13 @@ impl AcpWorker {
         permission_mode: AcpPermissionMode,
         prompt_timeout: Duration,
         event_tx: broadcast::Sender<ProcessEvent>,
-    ) -> (Self, mpsc::Sender<String>) {
+        process_control_registry: Arc<crate::agent::process_control::ProcessControlRegistry>,
+    ) -> (Self, mpsc::Sender<WorkerFollowUp>) {
         let (input_tx, input_rx) = mpsc::channel(32);
         let mut worker = Self::new(
+            id,
+            callback,
+            initial_operation,
             channel_id,
             agent_id,
             task,
@@ -126,6 +145,7 @@ impl AcpWorker {
             permission_mode,
             prompt_timeout,
             event_tx,
+            process_control_registry,
         );
         worker.input_rx = Some(input_rx);
         (worker, input_tx)
@@ -153,23 +173,37 @@ impl AcpWorker {
         self.transcript_snapshot.clone()
     }
 
-    /// Send a status update via the process event bus.
-    fn send_status(&self, status: &str) {
-        let _ = self.event_tx.send(ProcessEvent::WorkerStatus {
-            agent_id: self.agent_id.clone(),
-            worker_id: self.id,
-            channel_id: self.channel_id.clone(),
-            status: status.to_string(),
-        });
+    /// Send a status update through the agent-owned worker registry.
+    async fn send_status(&self, status: &str) {
+        let applied = self
+            .process_control_registry
+            .update_worker_status(self.callback, status)
+            .await;
+        if applied != crate::agent::process_control::WorkerMutationResult::Applied {
+            return;
+        }
+        self.event_tx
+            .send(ProcessEvent::WorkerStatus {
+                agent_id: self.agent_id.clone(),
+                worker_id: self.id,
+                worker_registration_id: self.callback.registration_id,
+                channel_id: self.channel_id.clone(),
+                status: status.to_string(),
+            })
+            .ok();
     }
 
-    /// Send an idle event to mark this worker as waiting for follow-up input.
-    fn send_idle(&self) {
-        let _ = self.event_tx.send(ProcessEvent::WorkerIdle {
-            agent_id: self.agent_id.clone(),
-            worker_id: self.id,
-            channel_id: self.channel_id.clone(),
-        });
+    /// Send an idle event correlated to the operation that just completed.
+    fn send_idle(&self, operation_id: crate::agent::process_control::WorkerOperationId) {
+        self.event_tx
+            .send(ProcessEvent::WorkerIdle {
+                agent_id: self.agent_id.clone(),
+                worker_id: self.id,
+                worker_registration_id: self.callback.registration_id,
+                operation_id,
+                channel_id: self.channel_id.clone(),
+            })
+            .ok();
     }
 
     /// Scrub tool secret values from text, replacing each with `[REDACTED:<name>]`.
@@ -235,7 +269,7 @@ impl AcpWorker {
 
         let mut reader = BufReader::new(stdout);
 
-        self.send_status("initializing ACP session");
+        self.send_status("initializing ACP session").await;
         let agent_version = initialize(&mut stdin, &mut reader, &self.agent_id).await?;
         tracing::info!(
             worker_id = %self.id,
@@ -244,7 +278,7 @@ impl AcpWorker {
             "ACP agent initialized"
         );
 
-        self.send_status("creating session");
+        self.send_status("creating session").await;
         let session_id = create_session(&mut stdin, &mut reader, &self.directory).await?;
         tracing::info!(worker_id = %self.id, session_id = %session_id, "ACP session created");
 
@@ -256,7 +290,8 @@ impl AcpWorker {
         let short_id = session_id.chars().take(8).collect::<String>();
         self.send_status(&format!(
             "ACP session ready — resume with `omp -r {short_id}`"
-        ));
+        ))
+        .await;
         self.patch_omp_session_title(&session_id, &self.task).await;
 
         let prompt = self.build_prompt(&self.task);
@@ -269,18 +304,40 @@ impl AcpWorker {
             let scrubbed = self.scrub_text(&result_text);
             let scrubbed =
                 crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.secret_scan_mode);
-            let _ = self.event_tx.send(ProcessEvent::WorkerInitialResult {
-                agent_id: self.agent_id.clone(),
-                worker_id: self.id,
-                channel_id: self.channel_id.clone(),
-                result: scrubbed,
-            });
-            self.send_status("waiting for follow-up");
-            self.send_idle();
+            let operation = self
+                .initial_operation
+                .take()
+                .expect("fresh ACP workers have an initial operation");
+            let scrubbed = crate::agent::process_control::operation_result_or_marker(
+                scrubbed,
+                crate::agent::process_control::WorkerBackend::Acp,
+            );
+            let applied = self
+                .process_control_registry
+                .complete_worker_operation(
+                    self.callback,
+                    operation.operation_id,
+                    "waiting for follow-up",
+                )
+                .await;
+            if applied == crate::agent::process_control::WorkerMutationResult::Applied {
+                self.event_tx
+                    .send(ProcessEvent::WorkerOperationResult {
+                        agent_id: self.agent_id.clone(),
+                        worker_id: self.id,
+                        worker_registration_id: self.callback.registration_id,
+                        operation_id: operation.operation_id,
+                        result_target: operation.result_target.clone(),
+                        result: scrubbed,
+                    })
+                    .ok();
+                self.send_status("waiting for follow-up").await;
+                self.send_idle(operation.operation_id);
+            }
 
             while let Some(follow_up) = input_rx.recv().await {
-                self.send_status("processing follow-up");
-                let follow_up_prompt = self.build_prompt(&follow_up);
+                self.send_status("processing follow-up").await;
+                let follow_up_prompt = self.build_prompt(&follow_up.message);
                 let turn_text = match self
                     .run_turn(
                         &mut stdin,
@@ -298,35 +355,49 @@ impl AcpWorker {
                             %error,
                             "ACP follow-up failed"
                         );
-                        self.send_status("failed");
+                        self.send_status("failed").await;
                         break;
                     }
                 };
-                if !turn_text.is_empty() {
-                    let scrubbed = self.scrub_text(&turn_text);
-                    let scrubbed = crate::secrets::scrub::scrub_leaks_with_mode(
-                        &scrubbed,
-                        self.secret_scan_mode,
-                    );
-                    let _ = self.event_tx.send(ProcessEvent::WorkerInitialResult {
-                        agent_id: self.agent_id.clone(),
-                        worker_id: self.id,
-                        channel_id: self.channel_id.clone(),
-                        result: scrubbed,
-                    });
+                let turn_text = crate::agent::process_control::operation_result_or_marker(
+                    turn_text,
+                    crate::agent::process_control::WorkerBackend::Acp,
+                );
+                let scrubbed = self.scrub_text(&turn_text);
+                let scrubbed =
+                    crate::secrets::scrub::scrub_leaks_with_mode(&scrubbed, self.secret_scan_mode);
+                let applied = self
+                    .process_control_registry
+                    .complete_worker_operation(
+                        self.callback,
+                        follow_up.operation.operation_id,
+                        "waiting for follow-up",
+                    )
+                    .await;
+                if applied == crate::agent::process_control::WorkerMutationResult::Applied {
+                    self.event_tx
+                        .send(ProcessEvent::WorkerOperationResult {
+                            agent_id: self.agent_id.clone(),
+                            worker_id: self.id,
+                            worker_registration_id: self.callback.registration_id,
+                            operation_id: follow_up.operation.operation_id,
+                            result_target: follow_up.operation.result_target.clone(),
+                            result: scrubbed,
+                        })
+                        .ok();
+                    self.send_status("waiting for follow-up").await;
+                    self.send_idle(follow_up.operation.operation_id);
                 }
-                self.send_status("waiting for follow-up");
-                self.send_idle();
             }
         }
 
-        self.send_status("exiting");
+        self.send_status("exiting").await;
         let exit_result = exit_session(&mut stdin, &mut reader, &session_id).await;
         if let Err(error) = exit_result {
             tracing::debug!(worker_id = %self.id, %error, "ACP session/exit failed (agent may have exited)");
         }
 
-        self.send_status("completed");
+        self.send_status("completed").await;
 
         Ok(AcpWorkerResult { result_text })
     }
@@ -531,14 +602,36 @@ impl AcpWorker {
                     outcome,
                     "ACP permission request"
                 );
-                let _ = self.event_tx.send(ProcessEvent::WorkerPermission {
+                let interaction_target = self
+                    .process_control_registry
+                    .worker_snapshot_for_callback(self.callback)
+                    .await
+                    .and_then(|snapshot| {
+                        snapshot
+                            .active_operation
+                            .map(|operation| operation.result_target)
+                    })
+                    .unwrap_or(WorkerResultTarget::None);
+                let event_tx = self.event_tx.clone();
+                let event = ProcessEvent::WorkerPermission {
                     agent_id: self.agent_id.clone(),
                     worker_id: self.id,
+                    worker_registration_id: self.callback.registration_id,
+                    interaction_target,
                     channel_id: self.channel_id.clone(),
                     permission_id: permission.permission_id.clone(),
                     description: description.to_string(),
                     patterns: Vec::new(),
-                });
+                };
+                self.process_control_registry
+                    .run_if_worker_state(
+                        self.callback,
+                        crate::agent::process_control::WorkerRuntimeState::Running,
+                        move || {
+                            event_tx.send(event).ok();
+                        },
+                    )
+                    .await;
                 let response = build_permission_response(id, outcome);
                 write_line(stdin, &response).await?;
                 Ok(())
@@ -694,10 +787,10 @@ async fn create_session(
 /// Resolve the omp session storage root (`~/.omp/agent/sessions`), honoring
 /// the `PI_CODING_AGENT_SESSION_DIR` override omp itself supports.
 fn omp_sessions_root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os("PI_CODING_AGENT_SESSION_DIR")
+        && !dir.is_empty()
+    {
+        return Some(PathBuf::from(dir));
     }
     let home = dirs::home_dir()?;
     Some(home.join(".omp/agent/sessions"))

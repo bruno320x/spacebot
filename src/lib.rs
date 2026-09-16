@@ -222,6 +222,7 @@ pub enum ProcessEvent {
     WorkerStarted {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
         channel_id: Option<ChannelId>,
         task: String,
         worker_type: String,
@@ -233,6 +234,7 @@ pub enum ProcessEvent {
     WorkerStatus {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
         channel_id: Option<ChannelId>,
         status: String,
     },
@@ -242,11 +244,15 @@ pub enum ProcessEvent {
     WorkerIdle {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
+        operation_id: agent::process_control::WorkerOperationId,
         channel_id: Option<ChannelId>,
     },
     WorkerComplete {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
+        active_operation: Option<agent::process_control::WorkerOperationContext>,
         channel_id: Option<ChannelId>,
         result: String,
         notify: bool,
@@ -259,6 +265,7 @@ pub enum ProcessEvent {
     ToolStarted {
         agent_id: AgentId,
         process_id: ProcessId,
+        worker_registration_id: Option<agent::process_control::WorkerRegistrationId>,
         channel_id: Option<ChannelId>,
         call_id: String,
         tool_name: String,
@@ -267,6 +274,7 @@ pub enum ProcessEvent {
     ToolCompleted {
         agent_id: AgentId,
         process_id: ProcessId,
+        worker_registration_id: Option<agent::process_control::WorkerRegistrationId>,
         channel_id: Option<ChannelId>,
         call_id: String,
         tool_name: String,
@@ -314,6 +322,8 @@ pub enum ProcessEvent {
     WorkerPermission {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
+        interaction_target: agent::process_control::WorkerResultTarget,
         channel_id: Option<ChannelId>,
         permission_id: String,
         description: String,
@@ -322,6 +332,8 @@ pub enum ProcessEvent {
     WorkerQuestion {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
+        interaction_target: agent::process_control::WorkerResultTarget,
         channel_id: Option<ChannelId>,
         question_id: String,
         questions: Vec<opencode::QuestionInfo>,
@@ -349,6 +361,7 @@ pub enum ProcessEvent {
     OpenCodeSessionCreated {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
         channel_id: Option<ChannelId>,
         session_id: String,
         port: u16,
@@ -358,15 +371,16 @@ pub enum ProcessEvent {
     OpenCodePartUpdated {
         agent_id: AgentId,
         worker_id: WorkerId,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
         part: crate::opencode::types::OpenCodePart,
     },
-    /// An interactive worker's initial task completed. The worker remains alive
-    /// for follow-ups, but the channel should retrigger to deliver this result.
-    /// Unlike `WorkerComplete`, the worker is NOT removed from the active set.
-    WorkerInitialResult {
+    /// An interactive worker operation completed while the worker remains attached.
+    WorkerOperationResult {
         agent_id: AgentId,
         worker_id: WorkerId,
-        channel_id: Option<ChannelId>,
+        worker_registration_id: agent::process_control::WorkerRegistrationId,
+        operation_id: agent::process_control::WorkerOperationId,
+        result_target: agent::process_control::WorkerResultTarget,
         result: String,
     },
     TextDelta {
@@ -399,6 +413,7 @@ pub enum ProcessEvent {
     ProcessText {
         agent_id: AgentId,
         process_id: ProcessId,
+        worker_registration_id: Option<agent::process_control::WorkerRegistrationId>,
         channel_id: Option<ChannelId>,
         text: String,
     },
@@ -408,6 +423,7 @@ pub enum ProcessEvent {
     ToolOutput {
         agent_id: AgentId,
         process_id: ProcessId,
+        worker_registration_id: Option<agent::process_control::WorkerRegistrationId>,
         channel_id: Option<ChannelId>,
         /// Stable identifier matching the tool_call that initiated this stream.
         /// Allows frontend to deterministically associate lines with invocations.
@@ -530,6 +546,9 @@ pub struct AgentDeps {
     pub wake_def_store: Arc<wakes::WakeDefStore>,
     /// Per-agent autonomy run history (begin/complete + recent summaries).
     pub autonomy_run_store: Arc<wakes::AutonomyRunStore>,
+    /// Doorbell for the resident autonomy channel. The shared cell is wired
+    /// when the supervisor starts, so cloned dependency bundles stay valid.
+    pub autonomy_control: agent::autonomy::AutonomyControl,
     pub project_store: Arc<projects::ProjectStore>,
     pub cron_tool: Option<tools::CronTool>,
     pub runtime_config: Arc<config::RuntimeConfig>,
@@ -552,14 +571,6 @@ pub struct AgentDeps {
     /// cancellation can kill every child a unit of work spawned — the orphan
     /// prevention surface shared by the shell, ACP, and OpenCode backends.
     pub child_registry: Arc<supervisor::ChildRegistry>,
-    /// Live controls for channel-less (cortex/autonomy) workers, keyed by
-    /// worker id. Lets the cancel API abort detached workers that no channel
-    /// owns (#653); entries are removed when their task finishes.
-    pub detached_workers: Arc<
-        tokio::sync::RwLock<
-            std::collections::HashMap<WorkerId, crate::agent::channel_dispatch::WorkerTaskControl>,
-        >,
-    >,
     /// Sender for injecting messages into channels from outside the normal
     /// inbound message flow (e.g. cross-agent task completion notifications).
     pub injection_tx: tokio::sync::mpsc::Sender<ChannelInjection>,
@@ -620,6 +631,7 @@ pub struct Agent {
     pub config: config::ResolvedAgentConfig,
     pub db: db::Db,
     pub deps: AgentDeps,
+    pub autonomy_supervisor: Option<agent::autonomy::AutonomySupervisorHandle>,
 }
 
 /// Standard metadata keys set by all adapters.
@@ -806,10 +818,23 @@ pub struct Attachment {
 /// when multiple threads share the same channel (e.g. Slack threads within a
 /// single channel). The paired `InboundMessage` carries the platform metadata
 /// (thread_ts, message_ts, etc.) needed to route the response correctly.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RoutedResponse {
     pub response: OutboundResponse,
     pub target: InboundMessage,
+    pub delivery_receipt: Option<tokio::sync::oneshot::Sender<std::result::Result<(), String>>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RoutedDeliveryError {
+    #[error("outbound router is unavailable")]
+    RouterUnavailable,
+    #[error("outbound router dropped the delivery receipt")]
+    ReceiptDropped,
+    #[error("messaging adapter rejected delivery: {0}")]
+    Adapter(String),
+    #[error("timed out waiting for messaging adapter delivery")]
+    TimedOut,
 }
 
 /// A sender that automatically pairs outbound responses with a captured
@@ -834,8 +859,29 @@ impl RoutedSender {
             .send(RoutedResponse {
                 response,
                 target: self.target.clone(),
+                delivery_receipt: None,
             })
             .await
+    }
+
+    pub async fn send_confirmed(
+        &self,
+        response: OutboundResponse,
+    ) -> std::result::Result<(), RoutedDeliveryError> {
+        let (delivery_tx, delivery_rx) = tokio::sync::oneshot::channel();
+        self.inner
+            .send(RoutedResponse {
+                response,
+                target: self.target.clone(),
+                delivery_receipt: Some(delivery_tx),
+            })
+            .await
+            .map_err(|_| RoutedDeliveryError::RouterUnavailable)?;
+        tokio::time::timeout(std::time::Duration::from_secs(60), delivery_rx)
+            .await
+            .map_err(|_| RoutedDeliveryError::TimedOut)?
+            .map_err(|_| RoutedDeliveryError::ReceiptDropped)?
+            .map_err(RoutedDeliveryError::Adapter)
     }
 }
 
@@ -1220,6 +1266,50 @@ pub enum StatusUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn routed_sender_waits_for_delivery_confirmation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = RoutedSender::new(tx, InboundMessage::empty());
+        let delivery = tokio::spawn(async move {
+            let mut routed = rx.recv().await.expect("missing routed response");
+            routed
+                .delivery_receipt
+                .take()
+                .expect("missing delivery receipt")
+                .send(Ok(()))
+                .expect("delivery receiver dropped");
+        });
+
+        sender
+            .send_confirmed(OutboundResponse::Text("delivered".into()))
+            .await
+            .expect("delivery should be confirmed");
+        delivery.await.expect("delivery task failed");
+    }
+
+    #[tokio::test]
+    async fn routed_sender_surfaces_adapter_failure() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = RoutedSender::new(tx, InboundMessage::empty());
+        let delivery = tokio::spawn(async move {
+            let mut routed = rx.recv().await.expect("missing routed response");
+            routed
+                .delivery_receipt
+                .take()
+                .expect("missing delivery receipt")
+                .send(Err("telegram rejected file".into()))
+                .expect("delivery receiver dropped");
+        });
+
+        let error = sender
+            .send_confirmed(OutboundResponse::Text("undelivered".into()))
+            .await
+            .expect_err("adapter failure should propagate");
+        delivery.await.expect("delivery task failed");
+
+        assert!(error.to_string().contains("telegram rejected file"));
+    }
 
     #[test]
     fn card_footer_deserializes_from_string() {
